@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic;
 use std::hash::{BuildHasher, Hash};
 use std::collections::hash_map::RandomState;
-use std::collections::BinaryHeap;
 
 /// A handle that may be used to modify the eventually consistent map.
 ///
@@ -52,7 +51,7 @@ where
     first: bool,
     second: bool,
 
-    cached_opheap: BinaryHeap<Operation<K, V>>,
+    cached_ops: Vec<Operation<K, V>>,
 }
 
 pub fn new<K, V, M, S>(
@@ -75,7 +74,7 @@ where
         first: true,
         second: false,
 
-        cached_opheap: Default::default(),
+        cached_ops: Default::default(),
     }
 }
 
@@ -158,12 +157,11 @@ where
             if self.swap_index != 0 {
                 // we can drain out the operations that only the w_handle map needs
                 // NOTE: the if above is because drain(0..0) would remove 0
-                self.cached_opheap
-                    .extend(self.oplog.drain(0..self.swap_index));
+                self.cached_ops.extend(self.oplog.drain(0..self.swap_index));
             }
             // the rest have to be cloned because they'll also be needed by the r_handle map
-            self.cached_opheap.extend(self.oplog.iter().cloned());
-            Self::apply_ops(w_handle, self.cached_opheap.drain());
+            self.cached_ops.extend(self.oplog.iter().cloned());
+            Self::apply_ops(w_handle, &mut self.cached_ops);
             // the w_handle map is about to become the r_handle, and can ignore the oplog
             self.swap_index = self.oplog.len();
             // ensure meta-information is up to date
@@ -217,7 +215,8 @@ where
         } else {
             // we know there are no outstanding w_handle readers, so we can modify it directly!
             let inner = self.w_handle.as_mut().unwrap();
-            Self::apply_ops(inner, Some(op));
+            self.cached_ops.push(op);
+            Self::apply_ops(inner, &mut self.cached_ops);
             // NOTE: since we didn't record this in the oplog, r_handle *must* clone w_handle
         }
     }
@@ -257,10 +256,7 @@ where
         self.add_op(Operation::Empty(k));
     }
 
-    fn apply_ops<I>(inner: &mut Inner<K, V, M, S>, ops: I)
-    where
-        I: IntoIterator<Item = Operation<K, V>>,
-    {
+    fn apply_ops(inner: &mut Inner<K, V, M, S>, ops: &mut Vec<Operation<K, V>>) {
         // we're going to be doing some unsafe stuff here to avoid hashing the same key multiple
         // times. in particular, we're going to cache an entry into `inner` across loop iterations,
         // which is unsafe because inside the loop we may re-assign the entry. we do this by making
@@ -270,8 +266,8 @@ where
         // the invariant we are enforcing is that inner is only dereferenced when `entry` is `None`
         let inner = inner as *mut Inner<K, V, M, S>;
 
-        let ops = ops.into_iter();
-        let mut ops = ops.peekable();
+        ops.sort_by(|a, b| a.key().cmp(b.key()));
+        let mut ops = ops.drain(..).peekable();
         let mut entry = None;
         while let Some(op) = ops.next() {
             let (disc, key, value) = match op {
