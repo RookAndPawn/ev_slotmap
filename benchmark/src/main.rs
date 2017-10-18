@@ -153,9 +153,9 @@ fn main() {
             .partition(|&(write, _)| write);
 
         let n = if refresh == 1 {
-            "evmap".to_owned()
+            "evmap-sorted".to_owned()
         } else {
-            format!("evmap-refresh{}", refresh)
+            format!("evmap-sorted-refresh{}", refresh)
         };
         stat(&n, "write", wres);
         stat(&n, "read", rres);
