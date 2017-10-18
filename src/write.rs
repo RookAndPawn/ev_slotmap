@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic;
 use std::hash::{BuildHasher, Hash};
 use std::collections::hash_map::RandomState;
+use std::collections::BinaryHeap;
 
 /// A handle that may be used to modify the eventually consistent map.
 ///
@@ -50,6 +51,8 @@ where
     meta: M,
     first: bool,
     second: bool,
+
+    cached_opheap: BinaryHeap<Operation<K, V>>,
 }
 
 pub fn new<K, V, M, S>(
@@ -57,26 +60,28 @@ pub fn new<K, V, M, S>(
     r_handle: ReadHandle<K, V, M, S>,
 ) -> WriteHandle<K, V, M, S>
 where
-    K: Eq + Hash,
+    K: Ord + Hash,
     S: BuildHasher,
     M: 'static + Clone,
 {
     let m = w_handle.meta.clone();
     WriteHandle {
         w_handle: Some(Box::new(w_handle)),
-        oplog: Vec::new(),
+        oplog: Default::default(),
         swap_index: 0,
         r_handle: r_handle,
         last_epochs: Vec::new(),
         meta: m,
         first: true,
         second: false,
+
+        cached_opheap: Default::default(),
     }
 }
 
 impl<K, V, M, S> WriteHandle<K, V, M, S>
 where
-    K: Eq + Hash + Clone,
+    K: Ord + Hash + Clone,
     S: BuildHasher + Clone,
     V: Eq + Clone,
     M: 'static + Clone,
@@ -153,14 +158,12 @@ where
             if self.swap_index != 0 {
                 // we can drain out the operations that only the w_handle map needs
                 // NOTE: the if above is because drain(0..0) would remove 0
-                for op in self.oplog.drain(0..self.swap_index) {
-                    Self::apply_op(w_handle, op);
-                }
+                self.cached_opheap
+                    .extend(self.oplog.drain(0..self.swap_index));
             }
             // the rest have to be cloned because they'll also be needed by the r_handle map
-            for op in self.oplog.iter().cloned() {
-                Self::apply_op(w_handle, op);
-            }
+            self.cached_opheap.extend(self.oplog.iter().cloned());
+            Self::apply_ops(w_handle, self.cached_opheap.drain());
             // the w_handle map is about to become the r_handle, and can ignore the oplog
             self.swap_index = self.oplog.len();
             // ensure meta-information is up to date
@@ -214,7 +217,7 @@ where
         } else {
             // we know there are no outstanding w_handle readers, so we can modify it directly!
             let inner = self.w_handle.as_mut().unwrap();
-            Self::apply_op(inner, op);
+            Self::apply_ops(inner, Some(op));
             // NOTE: since we didn't record this in the oplog, r_handle *must* clone w_handle
         }
     }
@@ -254,30 +257,90 @@ where
         self.add_op(Operation::Empty(k));
     }
 
-    fn apply_op(inner: &mut Inner<K, V, M, S>, op: Operation<K, V>) {
-        match op {
-            Operation::Replace(key, value) => {
-                let v = inner.data.entry(key).or_insert_with(Vec::new);
-                v.clear();
-                v.push(value);
-            }
-            Operation::Clear(key) => {
-                let v = inner.data.entry(key).or_insert_with(Vec::new);
-                v.clear();
-            }
-            Operation::Add(key, value) => {
-                inner.data.entry(key).or_insert_with(Vec::new).push(value);
-            }
-            Operation::Empty(key) => {
-                inner.data.remove(&key);
-            }
-            Operation::Remove(key, value) => {
-                if let Some(e) = inner.data.get_mut(&key) {
-                    // find the first entry that matches all fields
-                    if let Some(i) = e.iter().position(|v| v == &value) {
-                        e.swap_remove(i);
-                    }
+    fn apply_ops<I>(inner: &mut Inner<K, V, M, S>, ops: I)
+    where
+        I: IntoIterator<Item = Operation<K, V>>,
+    {
+        // we're going to be doing some unsafe stuff here to avoid hashing the same key multiple
+        // times. in particular, we're going to cache an entry into `inner` across loop iterations,
+        // which is unsafe because inside the loop we may re-assign the entry. we do this by making
+        // `inner` be a `*mut`, so that using it is unsafe, but the entry is the only mutable
+        // reference.
+        //
+        // the invariant we are enforcing is that inner is only dereferenced when `entry` is `None`
+        let inner = inner as *mut Inner<K, V, M, S>;
+
+        let ops = ops.into_iter();
+        let mut ops = ops.peekable();
+        let mut entry = None;
+        while let Some(op) = ops.next() {
+            let (disc, key, value) = match op {
+                Operation::Replace(key, value) => (1, key, Some(value)),
+                Operation::Clear(key) => (2, key, None),
+                Operation::Add(key, value) => (3, key, Some(value)),
+                Operation::Empty(key) => (4, key, None),
+                Operation::Remove(key, value) => (5, key, Some(value)),
+            };
+
+            let next_same = if let Some(op) = ops.peek() {
+                op.key() == &key
+            } else {
+                false
+            };
+
+            if entry.is_none() {
+                if disc == 4 {
+                    // Operation::Empty
+                    // unsafe ok because entry is none
+                    unsafe { &mut *inner }.data.remove(&key);
+                    continue;
                 }
+
+                // unsafe ok because entry is none
+                let e = unsafe { &mut *inner }
+                    .data
+                    .entry(key)
+                    .or_insert_with(Vec::new);
+                entry = Some(e);
+            } else if disc == 4 {
+                entry = None;
+                // unsafe ok because entry is none
+                unsafe { &mut *inner }.data.remove(&key);
+                continue;
+            }
+
+            {
+                let v = entry.as_mut().unwrap();
+                match disc {
+                    1 => {
+                        // Operation::Replace
+                        v.clear();
+                        v.push(value.unwrap());
+                    }
+                    2 => {
+                        // Operation::Clear
+                        v.clear();
+                    }
+                    3 => {
+                        // Operation::Add
+                        v.push(value.unwrap());
+                    }
+                    4 => unreachable!(),
+                    5 => {
+                        // Operation::Remove
+                        // TODO: this will add a vec for the key if it doesn't exist
+                        // find the first entry that matches all fields
+                        let value = value.as_ref().unwrap();
+                        if let Some(i) = v.iter().position(|v| v == value) {
+                            v.swap_remove(i);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            if !next_same {
+                entry = None;
             }
         }
     }
@@ -285,7 +348,7 @@ where
 
 impl<K, V, M, S> Extend<(K, V)> for WriteHandle<K, V, M, S>
 where
-    K: Eq + Hash + Clone,
+    K: Ord + Hash + Clone,
     S: BuildHasher + Clone,
     V: Eq + Clone,
     M: 'static + Clone,

@@ -196,6 +196,52 @@ enum Operation<K, V> {
     Clear(K),
 }
 
+impl<K, V> Operation<K, V> {
+    fn key(&self) -> &K {
+        match *self {
+            Operation::Replace(ref k, _) => k,
+            Operation::Add(ref k, _) => k,
+            Operation::Remove(ref k, _) => k,
+            Operation::Empty(ref k) => k,
+            Operation::Clear(ref k) => k,
+        }
+    }
+}
+
+use std::cmp::Ordering;
+impl<K, V> PartialOrd for Operation<K, V>
+where
+    K: PartialOrd + PartialEq,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.key().partial_cmp(other.key())
+    }
+}
+
+impl<K, V> PartialEq for Operation<K, V>
+where
+    K: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl<K, V> Eq for Operation<K, V>
+where
+    K: PartialEq,
+{
+}
+
+impl<K, V> Ord for Operation<K, V>
+where
+    K: Ord + Eq,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key().cmp(other.key())
+    }
+}
+
 mod write;
 pub use write::WriteHandle;
 
@@ -263,7 +309,7 @@ where
     #[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
     pub fn construct<K, V>(self) -> (ReadHandle<K, V, M, S>, WriteHandle<K, V, M, S>)
     where
-        K: Eq + Hash + Clone,
+        K: Ord + Hash + Clone,
         S: Clone,
         V: Clone,
         M: 'static + Clone,
@@ -289,7 +335,7 @@ pub fn new<K, V>() -> (
     WriteHandle<K, V, (), RandomState>,
 )
 where
-    K: Eq + Hash + Clone,
+    K: Ord + Hash + Clone,
     V: Clone,
 {
     Options::default().construct()
@@ -304,7 +350,7 @@ pub fn with_meta<K, V, M>(
     WriteHandle<K, V, M, RandomState>,
 )
 where
-    K: Eq + Hash + Clone,
+    K: Ord + Hash + Clone,
     M: 'static + Clone,
     V: 'static + Clone,
 {
