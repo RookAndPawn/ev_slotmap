@@ -363,7 +363,7 @@ where
     ///
     /// E.g.:
     ///
-    /// ```rust
+    /// ```ignore
     /// map.write(|w| {
     ///     w.insert(0, 'a')
     ///      .insert(1, 'b')
