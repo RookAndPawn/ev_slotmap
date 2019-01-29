@@ -84,9 +84,9 @@ where
         }
     }
 
-    fn with_handle<F, T>(&self, f: F) -> Option<T>
+    pub(crate) fn with_handle_raw<F, T>(&self, f: F) -> T
     where
-        F: FnOnce(&Inner<K, V, M, S>) -> T,
+        F: FnOnce(Option<&Inner<K, V, M, S>>) -> T,
     {
         // once we update our epoch, the writer can no longer do a swap until we set the MSB to
         // indicate that we've finished our read. however, we still need to deal with the case of a
@@ -125,7 +125,7 @@ where
         // then, atomically read pointer, and use the map being pointed to
         let r_handle = self.inner.load(atomic::Ordering::Acquire);
 
-        let res = unsafe { r_handle.as_ref().map(f) };
+        let res = unsafe { f(r_handle.as_ref()) };
 
         // we've finished reading -- let the writer know
         self.epoch.store(
@@ -134,6 +134,14 @@ where
         );
 
         res
+    }
+
+    #[inline]
+    fn with_handle<F, T>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(&Inner<K, V, M, S>) -> T,
+    {
+        self.with_handle_raw(|inner| inner.map(f))
     }
 
     /// Returns the number of non-empty keys present in the map.

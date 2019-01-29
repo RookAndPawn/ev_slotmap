@@ -13,14 +13,36 @@ pub(crate) type Values<T> = Vec<T>;
 #[cfg(feature = "smallvec")]
 pub(crate) type Values<T> = smallvec::SmallVec<[T; 1]>;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+// Just let the procedural macro handle this part...
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "K: Eq + Hash + Serialize, V: Serialize, S: BuildHasher, M: Serialize"
+    ))
+)]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        deserialize = "K: Eq + Hash + Deserialize<'de>, V: Deserialize<'de>, S: BuildHasher + Default, M: Deserialize<'de>"
+    ))
+)]
 pub(crate) struct Inner<K, V, M, S>
 where
     K: Eq + Hash,
     S: BuildHasher,
 {
     pub(crate) data: HashMap<K, Values<V>, S>,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) epochs: Arc<Mutex<Vec<Arc<atomic::AtomicUsize>>>>,
+
     pub(crate) meta: M,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
     ready: bool,
 }
 
@@ -73,5 +95,16 @@ where
 
     pub fn is_ready(&self) -> bool {
         self.ready
+    }
+}
+
+impl<K, V, M, S> Default for Inner<K, V, M, S>
+where
+    K: Eq + Hash,
+    S: BuildHasher + Default,
+    M: Default,
+{
+    fn default() -> Self {
+        Inner::with_hasher(Default::default(), Default::default())
     }
 }

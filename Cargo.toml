@@ -21,10 +21,15 @@ travis-ci = { repository = "jonhoo/rust-evmap" }
 maintenance = { status = "passively-maintained" }
 
 [dependencies]
+parking_lot = "0.7.1"
 hashbrown = { version = "0.1.8", optional = true }
 smallvec = { version = "0.6.7", optional = true }
+serde = { version = "1.0.85", optional = true, features = ["derive"] }
 
 [features]
 default = ["hashbrown", "smallvec"]
 nightly_hashbrown = ["hashbrown/nightly"]
 nightly_smallvec = ["smallvec/union", "smallvec/may_dangle", "smallvec/specialization"]
+hashbrowh_serde = ["hashbrown", "hashbrown/serde", "serde"]
+smallvec_serde = ["smallvec", "smallvec/serde", "serde"]
+serde1 = ["hashbrowh_serde", "smallvec_serde", "serde"]
