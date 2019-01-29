@@ -37,7 +37,7 @@ where
     where
         SER: Serializer,
     {
-        self.refresh();
+        self.flush();
 
         (**self).serialize(serializer)
     }
@@ -55,7 +55,7 @@ where
     where
         SER: Serializer,
     {
-        self.write(|w| w.refresh());
+        self.write(|w| w.flush());
 
         (**self).serialize(serializer)
     }
