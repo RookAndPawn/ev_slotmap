@@ -1,10 +1,9 @@
 //! Operations on maps and value-sets
 
 use std::borrow::Cow;
-use std::cell::{Cell, UnsafeCell};
 use std::hash::{BuildHasher, Hash};
 use std::sync::Arc;
-use std::{fmt, mem, ptr};
+use std::{fmt, mem};
 
 use hashbrown::hash_map::RawEntryMut;
 use smallvec::SmallVec;
@@ -160,87 +159,16 @@ pub enum Operation<K, V> {
 /// It does this through two flags, where the first simply mutably borrows the
 /// inner operation, while the second consumes it and renders it unreadable again.
 pub(crate) struct MarkedOperation<K, V> {
-    pub op: mem::ManuallyDrop<UnsafeCell<Operation<K, V>>>,
-    pub flag: Cell<u8>,
-}
-
-const NONE_FLAG: u8 = 0; // value has not been used at all
-const FIRST_FLAG: u8 = 1; // value has been used without consuming
-const SECOND_FLAG: u8 = 2; // value has been consumed
-
-impl<K, V> Drop for MarkedOperation<K, V> {
-    fn drop(&mut self) {
-        // If the operation hasn't been consumed, drop it
-        match self.flag.get() {
-            NONE_FLAG | FIRST_FLAG => unsafe {
-                mem::ManuallyDrop::drop(&mut self.op);
-            },
-            _ => {}
-        }
-    }
+    pub op: Option<Operation<K, V>>,
+    pub applied: bool,
 }
 
 impl<K, V> MarkedOperation<K, V> {
     #[inline]
     pub fn new(op: Operation<K, V>) -> Self {
         MarkedOperation {
-            op: mem::ManuallyDrop::new(UnsafeCell::new(op)),
-            flag: Cell::new(NONE_FLAG),
-        }
-    }
-
-    #[inline(always)]
-    pub fn mark_first(&self) {
-        self.flag.set(FIRST_FLAG);
-    }
-
-    #[inline(always)]
-    pub fn mark_second(&self) {
-        self.flag.set(SECOND_FLAG);
-    }
-
-    #[inline(always)]
-    pub fn consumed(&self) -> bool {
-        self.flag.get() == SECOND_FLAG
-    }
-
-    #[inline(always)]
-    pub fn as_ref(&self) -> Option<&Operation<K, V>> {
-        match self.flag.get() {
-            NONE_FLAG => Some(unsafe { &*self.op.get() }),
-            _ => None,
-        }
-    }
-
-    #[inline(always)]
-    pub fn as_mut(&self) -> Option<&mut Operation<K, V>> {
-        match self.flag.get() {
-            NONE_FLAG => Some(unsafe { &mut *self.op.get() }),
-            _ => None,
-        }
-    }
-
-    #[inline(always)]
-    pub fn take_first(&self) -> Option<&mut Operation<K, V>> {
-        match self.flag.get() {
-            NONE_FLAG => {
-                self.flag.set(FIRST_FLAG);
-
-                Some(unsafe { &mut *self.op.get() })
-            }
-            _ => None,
-        }
-    }
-
-    #[inline(always)]
-    pub fn take_second(&self) -> Option<Operation<K, V>> {
-        match self.flag.get() {
-            SECOND_FLAG => None,
-            _ => {
-                self.flag.set(SECOND_FLAG);
-
-                Some(unsafe { ptr::read(self.op.get()) })
-            }
+            op: Some(op),
+            applied: false,
         }
     }
 }

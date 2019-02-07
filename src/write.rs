@@ -8,7 +8,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic;
 use std::sync::{Arc, MutexGuard};
-use std::{mem, ptr, thread};
+use std::{mem, thread};
 
 /// A handle that may be used to modify the eventually consistent map.
 ///
@@ -240,13 +240,13 @@ where
                 // other map). on apply_second, we call the destructor for anything that's been
                 // removed (since those removals have already happened on the other map, and
                 // without calling their destructor).
-                Self::apply_second(w_handle, &self.oplog[..self.swap_index]);
+                Self::apply_second(w_handle, &mut self.oplog[..self.swap_index]);
 
                 debug_assert_eq!(
                     self.oplog
                         .iter()
                         .take(self.swap_index)
-                        .filter(|op| !op.consumed())
+                        .filter(|op| op.op.is_some())
                         .count(),
                     0
                 );
@@ -256,7 +256,7 @@ where
 
             // the rest have to be shallow-cloned because
             // they'll also be needed by the r_handle map
-            Self::apply_first(w_handle, &self.oplog);
+            Self::apply_first(w_handle, &mut self.oplog);
 
             // the w_handle map is about to become the r_handle, and can ignore the oplog
             self.swap_index = self.oplog.len();
@@ -431,7 +431,9 @@ where
     /// assert_eq!(w.pending().count(), 0);
     /// ```
     pub fn pending(&self) -> impl Iterator<Item = &Operation<K, V>> {
-        self.oplog.iter().filter_map(|marked_op| marked_op.as_ref())
+        self.oplog
+            .iter()
+            .filter_map(|marked_op| marked_op.op.as_ref())
     }
 
     /// Refresh as necessary to ensure that all operations are visible to readers.
@@ -577,15 +579,24 @@ where
     }
 
     /// Apply ops in such a way that no values are dropped, only forgotten
-    fn apply_first(inner: &mut Inner<K, V, M, S>, ops: &[MarkedOperation<K, V>]) {
-        for (i, op) in ops.iter().enumerate() {
-            match op.take_first() {
-                None => {}
-                Some(Operation::Map { ref mut op }) => op.apply_first(inner),
-                Some(Operation::Value {
+    fn apply_first(inner: &mut Inner<K, V, M, S>, ops: &mut [MarkedOperation<K, V>]) {
+        for i in 0..ops.len() {
+            let (head, tail) = ops.split_at_mut(i + 1);
+            let op = head.last_mut().unwrap();
+            if op.applied {
+                continue;
+            }
+
+            match op
+                .op
+                .as_mut()
+                .expect("values cannot be taken in first pass")
+            {
+                Operation::Map { ref mut op } => op.apply_first(inner),
+                Operation::Value {
                     ref key,
                     ref mut op,
-                }) => {
+                } => {
                     // cache the key hash
                     let hash = {
                         let mut hasher = inner.data.hasher().build_hasher();
@@ -605,14 +616,22 @@ where
                         );
                     }
 
-                    'lookahead: for next_marked_op in &ops[i + 1..] {
-                        match next_marked_op.as_mut() {
-                            Some(Operation::Map { .. }) => break 'lookahead,
-                            Some(Operation::Value {
-                                key: ref next_key,
-                                op: ref mut next_op,
-                            }) if next_key == key => {
-                                next_marked_op.mark_first();
+                    'lookahead: for next_marked_op in tail {
+                        match next_marked_op {
+                            MarkedOperation {
+                                op: Some(Operation::Map { .. }),
+                                ..
+                            } => break 'lookahead,
+                            MarkedOperation {
+                                ref mut applied,
+                                op:
+                                    Some(Operation::Value {
+                                        key: ref next_key,
+                                        op: ref mut next_op,
+                                    }),
+                            } if next_key == key => {
+                                assert!(!*applied);
+                                *applied = true;
 
                                 let raw_entry = inner.data.raw_entry_mut();
 
@@ -620,6 +639,9 @@ where
                                     Cow::Borrowed(key),
                                     raw_entry.from_key_hashed_nocheck(hash, key),
                                 );
+                            }
+                            MarkedOperation { op: None, .. } => {
+                                unreachable!("found taken operation in first pass")
                             }
                             _ => {}
                         }
@@ -630,9 +652,10 @@ where
     }
 
     /// Apply operations while allowing dropping of values
-    fn apply_second(inner: &mut Inner<K, V, M, S>, ops: &[MarkedOperation<K, V>]) {
-        for (i, op) in ops.iter().enumerate() {
-            match op.take_second() {
+    fn apply_second(inner: &mut Inner<K, V, M, S>, ops: &mut [MarkedOperation<K, V>]) {
+        for i in 0..ops.len() {
+            let (head, tail) = ops.split_at_mut(i + 1);
+            match head.last_mut().unwrap().op.take() {
                 None => {}
 
                 // Apply whole-map operations now
@@ -664,21 +687,22 @@ where
                     //
                     // This done in such a way as to avoid repeated matching,
                     // by using unsafe pointers and references
-                    'lookahead: for next_marked_op in &ops[i + 1..] {
-                        match next_marked_op.as_mut() {
-                            Some(Operation::Map { .. }) => break 'lookahead,
-                            Some(Operation::Value {
-                                key: ref next_key,
-                                op: ref mut next_op,
-                            }) if next_key == &key => {
-                                // mark this op as being consumed
-                                next_marked_op.mark_second();
-
-                                // read the value from the reference we have
-                                let op = unsafe { ptr::read(next_op) };
+                    'lookahead: for next_marked_op in tail {
+                        match next_marked_op.op.take() {
+                            Some(v @ Operation::Map { .. }) => {
+                                // put it back
+                                next_marked_op.op = Some(v);
+                                break 'lookahead;
+                            }
+                            Some(Operation::Value { key: next_key, op }) => {
+                                if next_key != key {
+                                    // put it back
+                                    next_marked_op.op =
+                                        Some(Operation::Value { key: next_key, op });
+                                    continue;
+                                }
 
                                 let raw_entry = inner.data.raw_entry_mut();
-
                                 op.apply_second(
                                     Cow::Borrowed(&key),
                                     raw_entry.from_key_hashed_nocheck(hash, &key),
