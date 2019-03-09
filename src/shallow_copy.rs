@@ -1,5 +1,10 @@
+//! Types that can be cheaply aliased.
+
+use std::ops::{Deref, DerefMut};
+
 /// Types that implement this trait can be cheaply copied by (potentially) aliasing the data they
-/// contain.
+/// contain. Only the _last_ shallow copy will be dropped -- all others will be silently leaked
+/// (with `mem::forget`).
 pub trait ShallowCopy {
     /// Perform an aliasing copy of this value.
     ///
@@ -64,7 +69,43 @@ where
     }
 }
 
-macro_rules! impl_shallow_copy_for_copy {
+/// If you are willing to have your values be copied between the two views of the `evmap`,
+/// wrap them in this type.
+///
+/// This is effectively a way to bypass the `ShallowCopy` optimization.
+/// Note that you do not need this wrapper for most `Copy` primitives.
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub struct CopyValue<T>(T);
+
+impl<T: Copy> From<T> for CopyValue<T> {
+    fn from(t: T) -> Self {
+        CopyValue(t)
+    }
+}
+
+impl<T> ShallowCopy for CopyValue<T>
+where
+    T: Copy,
+{
+    unsafe fn shallow_copy(&mut self) -> Self {
+        CopyValue(self.0)
+    }
+}
+
+impl<T> Deref for CopyValue<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for CopyValue<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+macro_rules! impl_shallow_copy_for_copy_primitives {
     ($($t:ty)*) => ($(
         impl ShallowCopy for $t {
             unsafe fn shallow_copy(&mut self) -> Self {
@@ -74,7 +115,7 @@ macro_rules! impl_shallow_copy_for_copy {
     )*)
 }
 
-impl_shallow_copy_for_copy!(() bool char usize u8 u16 u32 u64 isize i8 i16 i32 i64);
+impl_shallow_copy_for_copy_primitives!(() bool char usize u8 u16 u32 u64 isize i8 i16 i32 i64);
 
 macro_rules! tuple_impls {
     ($(

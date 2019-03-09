@@ -263,7 +263,12 @@ impl<V> fmt::Debug for Predicate<V> {
 }
 
 /// A pending map operation.
+///
+/// Note that this enum should be considered
+/// [non-exhaustive](https://github.com/rust-lang/rust/issues/44109).
 #[derive(Clone, PartialEq, Eq, Debug)]
+// TODO: #[non_exhaustive]
+// https://github.com/rust-lang/rust/issues/44109
 pub enum Operation<K, V> {
     /// Replace the set of entries for this key with this value.
     Replace(K, V),
@@ -275,6 +280,10 @@ pub enum Operation<K, V> {
     Empty(K),
     /// Remove all values in the value set for this key.
     Clear(K),
+    /// Remove all values for all keys.
+    ///
+    /// Note that this will iterate once over all the keys internally.
+    Purge,
     /// Retains all values matching the given predicate.
     Retain(K, Predicate<V>),
     /// Shrinks a value-set to it's minimum necessary size, freeing memory
@@ -299,7 +308,7 @@ pub use read::ReadHandle;
 mod rw;
 pub use rw::ReadWriteHandle;
 
-mod shallow_copy;
+pub mod shallow_copy;
 pub use shallow_copy::ShallowCopy;
 
 /// Options for how to initialize the map.
@@ -360,7 +369,7 @@ where
     }
 
     /// Create the map, and construct the read and write handles used to access it.
-    #[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
+    #[allow(clippy::type_complexity)]
     pub fn construct<K, V>(self) -> (ReadHandle<K, V, M, S>, WriteHandle<K, V, M, S>)
     where
         K: Eq + Hash + Clone,
@@ -397,7 +406,7 @@ where
 /// Create an empty eventually consistent map.
 ///
 /// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
-#[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
+#[allow(clippy::type_complexity)]
 pub fn new<K, V>() -> (
     ReadHandle<K, V, (), RandomState>,
     WriteHandle<K, V, (), RandomState>,
@@ -412,7 +421,7 @@ where
 /// Create an empty eventually consistent map with meta information.
 ///
 /// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
-#[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
+#[allow(clippy::type_complexity)]
 pub fn with_meta<K, V, M>(
     meta: M,
 ) -> (
@@ -430,7 +439,7 @@ where
 /// Create an empty eventually consistent map with meta information and custom hasher.
 ///
 /// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
-#[cfg_attr(feature = "cargo-clippy", allow(type_complexity))]
+#[allow(clippy::type_complexity)]
 pub fn with_hasher<K, V, M, S>(
     meta: M,
     hasher: S,
