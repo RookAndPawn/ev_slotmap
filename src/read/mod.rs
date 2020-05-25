@@ -1,9 +1,7 @@
 use crate::inner::Inner;
 use crate::values::Values;
-
+use slotmap::Key;
 use std::borrow::Borrow;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash};
 use std::iter::FromIterator;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -26,12 +24,12 @@ pub use read_ref::{MapReadRef, ReadGuardIter};
 /// Note that any changes made to the map will not be made visible until the writer calls
 /// `refresh()`. In other words, all operations performed on a `ReadHandle` will *only* see writes
 /// to the map that preceeded the last call to `refresh()`.
-pub struct ReadHandle<K, V, M = (), S = RandomState>
+pub struct ReadHandle<K, V, M = ()>
 where
-    K: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Copy
 {
-    pub(crate) inner: sync::Arc<AtomicPtr<Inner<K, ManuallyDrop<V>, M, S>>>,
+    pub(crate) inner: sync::Arc<AtomicPtr<Inner<K, ManuallyDrop<V>, M>>>,
     pub(crate) epochs: crate::Epochs,
     epoch: sync::Arc<sync::atomic::AtomicUsize>,
     epoch_i: usize,
@@ -46,10 +44,10 @@ where
     _not_sync_no_feature: PhantomData<cell::Cell<()>>,
 }
 
-impl<K, V, M, S> Drop for ReadHandle<K, V, M, S>
+impl<K, V, M> Drop for ReadHandle<K, V, M>
 where
-    K: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Copy
 {
     fn drop(&mut self) {
         // parity must be restored, so okay to lock since we're not holding up the epoch
@@ -58,10 +56,10 @@ where
     }
 }
 
-impl<K, V, M, S> fmt::Debug for ReadHandle<K, V, M, S>
+impl<K, V, M> fmt::Debug for ReadHandle<K, V, M>
 where
-    K: Eq + Hash + fmt::Debug,
-    S: BuildHasher,
+    K: Eq + fmt::Debug + Key,
+    V: Copy,
     M: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -73,10 +71,10 @@ where
     }
 }
 
-impl<K, V, M, S> Clone for ReadHandle<K, V, M, S>
+impl<K, V, M> Clone for ReadHandle<K, V, M>
 where
-    K: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Copy
 {
     fn clone(&self) -> Self {
         ReadHandle::new(
@@ -86,25 +84,25 @@ where
     }
 }
 
-pub(crate) fn new<K, V, M, S>(
-    inner: Inner<K, ManuallyDrop<V>, M, S>,
+pub(crate) fn new<K, V, M>(
+    inner: Inner<K, ManuallyDrop<V>, M>,
     epochs: crate::Epochs,
-) -> ReadHandle<K, V, M, S>
+) -> ReadHandle<K, V, M>
 where
-    K: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Copy
 {
     let store = Box::into_raw(Box::new(inner));
     ReadHandle::new(sync::Arc::new(AtomicPtr::new(store)), epochs)
 }
 
-impl<K, V, M, S> ReadHandle<K, V, M, S>
+impl<K, V, M> ReadHandle<K, V, M>
 where
-    K: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Copy
 {
     fn new(
-        inner: sync::Arc<AtomicPtr<Inner<K, ManuallyDrop<V>, M, S>>>,
+        inner: sync::Arc<AtomicPtr<Inner<K, ManuallyDrop<V>, M>>>,
         epochs: crate::Epochs,
     ) -> Self {
         // tell writer about our epoch tracker
@@ -124,7 +122,7 @@ where
 
     /// Create a new `Sync` type that can produce additional `ReadHandle`s for use in other
     /// threads.
-    pub fn factory(&self) -> ReadHandleFactory<K, V, M, S> {
+    pub fn factory(&self) -> ReadHandleFactory<K, V, M> {
         ReadHandleFactory {
             inner: sync::Arc::clone(&self.inner),
             epochs: sync::Arc::clone(&self.epochs),
@@ -132,14 +130,13 @@ where
     }
 }
 
-impl<K, V, M, S> ReadHandle<K, V, M, S>
+impl<K, V, M> ReadHandle<K, V, M>
 where
-    K: Eq + Hash,
-    V: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Eq + Copy,
     M: Clone,
 {
-    fn handle(&self) -> Option<ReadGuard<'_, Inner<K, ManuallyDrop<V>, M, S>>> {
+    fn handle(&self) -> Option<ReadGuard<'_, Inner<K, ManuallyDrop<V>, M>>> {
         // once we update our epoch, the writer can no longer do a swap until we set the MSB to
         // indicate that we've finished our read. however, we still need to deal with the case of a
         // race between when the writer reads our epoch and when they decide to make the swap.
@@ -197,16 +194,6 @@ where
         }
     }
 
-    /// Safety: only safe is long as it is guarnteed that no swaps will happen for the lifetime of
-    /// the returned reference.
-    pub(crate) unsafe fn hasher(&self) -> &S {
-        self.inner
-            .load(atomic::Ordering::Acquire)
-            .as_ref()
-            .unwrap()
-            .data
-            .hasher()
-    }
 
     /// Take out a guarded live reference to the read side of the map.
     ///
@@ -217,7 +204,7 @@ where
     /// If no refresh has happened, or the map has been destroyed, this function returns `None`.
     ///
     /// See [`MapReadRef`].
-    pub fn read(&self) -> Option<MapReadRef<'_, K, V, M, S>> {
+    pub fn read(&self) -> Option<MapReadRef<'_, K, V, M>> {
         let guard = self.handle()?;
         if !guard.is_ready() {
             return None;
@@ -241,10 +228,10 @@ where
     }
 
     /// Internal version of `get_and`
-    fn get_raw<Q: ?Sized>(&self, key: &Q) -> Option<ReadGuard<'_, Values<ManuallyDrop<V>, S>>>
+    fn get_raw<Q: ?Sized>(&self, key: &Q) -> Option<ReadGuard<'_, Values<ManuallyDrop<V>>>>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         let inner = self.handle()?;
         if !inner.is_ready() {
@@ -264,10 +251,10 @@ where
     /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
     /// function returns `None`.
     #[inline]
-    pub fn get<'rh, Q: ?Sized>(&'rh self, key: &'_ Q) -> Option<ReadGuard<'rh, Values<V, S>>>
+    pub fn get<'rh, Q: ?Sized>(&'rh self, key: &'_ Q) -> Option<ReadGuard<'rh, V>>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         // call `borrow` here to monomorphize `get_raw` fewer times
         Some(self.get_raw(key.borrow())?.map_ref(Values::user_friendly))
@@ -291,7 +278,7 @@ where
     pub fn get_one<'rh, Q: ?Sized>(&'rh self, key: &'_ Q) -> Option<ReadGuard<'rh, V>>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         self.get_raw(key.borrow())?
             .map_opt(|x| x.user_friendly().get_one())
@@ -310,10 +297,10 @@ where
     /// function returns `None`.
     ///
     /// If no values exist for the given key, `Some(None, _)` is returned.
-    pub fn meta_get<Q: ?Sized>(&self, key: &Q) -> Option<(Option<ReadGuard<'_, Values<V, S>>>, M)>
+    pub fn meta_get<Q: ?Sized>(&self, key: &Q) -> Option<(Option<ReadGuard<'_,V>>, M)>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         let inner = self.handle()?;
         if !inner.is_ready() {
@@ -340,31 +327,15 @@ where
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         self.read().map_or(false, |x| x.contains_key(key))
-    }
-
-    /// Returns true if the map contains the specified value for the specified key.
-    ///
-    /// The key and value may be any borrowed form of the map's respective types, but `Hash` and
-    /// `Eq` on the borrowed form *must* match.
-    pub fn contains_value<Q: ?Sized, W: ?Sized>(&self, key: &Q, value: &W) -> bool
-    where
-        K: Borrow<Q>,
-        V: Borrow<W>,
-        Q: Hash + Eq,
-        W: Hash + Eq,
-    {
-        self.get_raw(key.borrow())
-            .map(|x| x.user_friendly().contains(value))
-            .unwrap_or(false)
     }
 
     /// Read all values in the map, and transform them into a new collection.
     pub fn map_into<Map, Collector, Target>(&self, mut f: Map) -> Collector
     where
-        Map: FnMut(&K, &Values<V, S>) -> Target,
+        Map: FnMut(&K, &V) -> Target,
         Collector: FromIterator<Target>,
     {
         Collector::from_iter(self.read().iter().flatten().map(|(k, v)| f(k, v)))

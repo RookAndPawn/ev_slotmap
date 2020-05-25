@@ -1,10 +1,9 @@
 use super::ReadGuard;
 use crate::{inner::Inner, values::Values};
-
+use slotmap::{SlotMap, Key};
 use std::borrow::Borrow;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash};
 use std::mem::ManuallyDrop;
+
 
 /// A live reference into the read half of an evmap.
 ///
@@ -14,26 +13,24 @@ use std::mem::ManuallyDrop;
 /// Since the map remains immutable while this lives, the methods on this type all give you
 /// unguarded references to types contained in the map.
 #[derive(Debug)]
-pub struct MapReadRef<'rh, K, V, M = (), S = RandomState>
+pub struct MapReadRef<'rh, K, V, M = ()>
 where
-    K: Hash + Eq,
-    V: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Eq + Copy,
 {
-    pub(super) guard: ReadGuard<'rh, Inner<K, ManuallyDrop<V>, M, S>>,
+    pub(super) guard: ReadGuard<'rh, Inner<K, ManuallyDrop<V>, M>>,
 }
 
-impl<'rh, K, V, M, S> MapReadRef<'rh, K, V, M, S>
+impl<'rh, K, V, M> MapReadRef<'rh, K, V, M>
 where
-    K: Hash + Eq,
-    V: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Eq + Copy,
 {
     /// Iterate over all key + valuesets in the map.
     ///
     /// Be careful with this function! While the iteration is ongoing, any writer that tries to
     /// refresh will block waiting on this reader to finish.
-    pub fn iter(&self) -> ReadGuardIter<'_, K, V, S> {
+    pub fn iter(&self) -> ReadGuardIter<'_, K, V> {
         ReadGuardIter {
             iter: Some(self.guard.data.iter()),
         }
@@ -62,10 +59,10 @@ where
     /// Note that not all writes will be included with this read -- only those that have been
     /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
     /// function returns `None`.
-    pub fn get<'a, Q: ?Sized>(&'a self, key: &'_ Q) -> Option<&'a Values<V, S>>
+    pub fn get<'a, Q: ?Sized>(&'a self, key: &'_ Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         self.guard.data.get(key).map(Values::user_friendly)
     }
@@ -85,7 +82,7 @@ where
     pub fn get_one<'a, Q: ?Sized>(&'a self, key: &'_ Q) -> Option<&'a V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         self.guard
             .data
@@ -100,50 +97,31 @@ where
     pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Eq,
     {
         self.guard.data.contains_key(key)
     }
-
-    /// Returns true if the map contains the specified value for the specified key.
-    ///
-    /// The key and value may be any borrowed form of the map's respective types, but `Hash` and
-    /// `Eq` on the borrowed form *must* match.
-    pub fn contains_value<Q: ?Sized, W: ?Sized>(&self, key: &Q, value: &W) -> bool
-    where
-        K: Borrow<Q>,
-        V: Borrow<W>,
-        Q: Hash + Eq,
-        W: Hash + Eq,
-    {
-        self.guard
-            .data
-            .get(key)
-            .map_or(false, |values| values.user_friendly().contains(value))
-    }
 }
 
-impl<'rh, K, Q, V, M, S> std::ops::Index<&'_ Q> for MapReadRef<'rh, K, V, M, S>
+impl<'rh, K, Q, V, M> std::ops::Index<&'_ Q> for MapReadRef<'rh, K, V, M>
 where
-    K: Eq + Hash + Borrow<Q>,
-    V: Eq + Hash,
-    Q: Eq + Hash + ?Sized,
-    S: BuildHasher,
+    K: Eq + Borrow<Q> + Key,
+    V: Eq + Copy,
+    Q: Eq + ?Sized
 {
-    type Output = Values<V, S>;
+    type Output = V;
     fn index(&self, key: &Q) -> &Self::Output {
         self.get(key).unwrap()
     }
 }
 
-impl<'rg, 'rh, K, V, M, S> IntoIterator for &'rg MapReadRef<'rh, K, V, M, S>
+impl<'rg, 'rh, K, V, M> IntoIterator for &'rg MapReadRef<'rh, K, V, M>
 where
-    K: Eq + Hash,
-    V: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Eq + Copy,
 {
-    type Item = (&'rg K, &'rg Values<V, S>);
-    type IntoIter = ReadGuardIter<'rg, K, V, S>;
+    type Item = (&'rg K, &'rg V);
+    type IntoIter = ReadGuardIter<'rg, K, V>;
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
@@ -151,24 +129,22 @@ where
 
 /// An [`Iterator`] over keys and values in the evmap.
 #[derive(Debug)]
-pub struct ReadGuardIter<'rg, K, V, S>
+pub struct ReadGuardIter<'rg, K, V>
 where
-    K: Eq + Hash,
-    V: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Eq + Copy,
 {
     iter: Option<
-        <&'rg crate::inner::MapImpl<K, Values<ManuallyDrop<V>, S>, S> as IntoIterator>::IntoIter,
+        <&'rg SlotMap<K, ManuallyDrop<V>> as IntoIterator>::IntoIter,
     >,
 }
 
-impl<'rg, K, V, S> Iterator for ReadGuardIter<'rg, K, V, S>
+impl<'rg, K, V> Iterator for ReadGuardIter<'rg, K, V>
 where
-    K: Eq + Hash,
-    V: Eq + Hash,
-    S: BuildHasher,
+    K: Eq + Key,
+    V: Eq + Copy
 {
-    type Item = (&'rg K, &'rg Values<V, S>);
+    type Item = (&'rg K, &'rg V);
     fn next(&mut self) -> Option<Self::Item> {
         self.iter
             .as_mut()

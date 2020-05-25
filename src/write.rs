@@ -2,9 +2,7 @@ use super::{Operation, Predicate, ShallowCopy};
 use crate::inner::Inner;
 use crate::read::ReadHandle;
 use crate::values::Values;
-
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash};
+use slotmap::Key;
 use std::mem::ManuallyDrop;
 use std::sync::atomic;
 use std::sync::{Arc, MutexGuard};
@@ -48,29 +46,27 @@ use std::collections::hash_map::Entry;
 /// assert_eq!(r.get(&x.0).map(|rs| rs.len()), Some(1));
 /// assert_eq!(r.get(&x.0).map(|rs| rs.iter().any(|v| v.0 == x.0 && v.1 == x.1)), Some(true));
 /// ```
-pub struct WriteHandle<K, V, M = (), S = RandomState>
+pub struct WriteHandle<K, V, M = ()>
 where
-    K: Eq + Hash + Clone,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
     epochs: crate::Epochs,
-    w_handle: Option<Box<Inner<K, ManuallyDrop<V>, M, S>>>,
+    w_handle: Option<Box<Inner<K, ManuallyDrop<V>, M>>>,
     oplog: Vec<Operation<K, V>>,
     swap_index: usize,
-    r_handle: ReadHandle<K, V, M, S>,
+    r_handle: ReadHandle<K, V, M>,
     last_epochs: Vec<usize>,
     meta: M,
     first: bool,
     second: bool,
 }
 
-impl<K, V, M, S> fmt::Debug for WriteHandle<K, V, M, S>
+impl<K, V, M> fmt::Debug for WriteHandle<K, V, M>
 where
-    K: Eq + Hash + Clone + fmt::Debug,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy + fmt::Debug,
+    K: Eq + Clone + fmt::Debug + Key,
+    V: Eq + ShallowCopy + fmt::Debug + Copy,
     M: 'static + Clone + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,15 +83,14 @@ where
     }
 }
 
-pub(crate) fn new<K, V, M, S>(
-    w_handle: Inner<K, ManuallyDrop<V>, M, S>,
+pub(crate) fn new<K, V, M>(
+    w_handle: Inner<K, ManuallyDrop<V>, M>,
     epochs: crate::Epochs,
-    r_handle: ReadHandle<K, V, M, S>,
-) -> WriteHandle<K, V, M, S>
+    r_handle: ReadHandle<K, V, M>,
+) -> WriteHandle<K, V, M>
 where
-    K: Eq + Hash + Clone,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
     let m = w_handle.meta.clone();
@@ -112,11 +107,10 @@ where
     }
 }
 
-impl<K, V, M, S> Drop for WriteHandle<K, V, M, S>
+impl<K, V, M> Drop for WriteHandle<K, V, M>
 where
-    K: Eq + Hash + Clone,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
     fn drop(&mut self) {
@@ -159,15 +153,14 @@ where
         // then we transmute r_handle to remove the ManuallyDrop, and then drop it, which will free
         // all the records. this is safe, since we know that no readers are using this pointer
         // anymore (due to the .wait() following swapping the pointer with NULL).
-        drop(unsafe { Box::from_raw(r_handle as *mut Inner<K, V, M, S>) });
+        drop(unsafe { Box::from_raw(r_handle as *mut Inner<K, V, M>) });
     }
 }
 
-impl<K, V, M, S> WriteHandle<K, V, M, S>
+impl<K, V, M> WriteHandle<K, V, M>
 where
-    K: Eq + Hash + Clone,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
     fn wait(&mut self, epochs: &mut MutexGuard<'_, slab::Slab<Arc<atomic::AtomicUsize>>>) {
@@ -265,9 +258,6 @@ where
                     )
                 }));
             }
-
-            // safety: we will not swap while we hold this reference
-            let r_hasher = unsafe { self.r_handle.hasher() };
 
             // the w_handle map has not seen any of the writes in the oplog
             // the r_handle map has not seen any of the writes following swap_index
@@ -513,7 +503,7 @@ where
     /// The value-bag will only disappear from readers after the next call to `refresh()`.
     ///
     /// Note that this does a _swap-remove_, so use it carefully.
-    pub fn empty_at_index(&mut self, index: usize) -> Option<(&K, &Values<V, S>)> {
+    pub fn empty_at_index(&mut self, index: usize) -> Option<(&K, &V)> {
         self.add_op(Operation::EmptyRandom(index));
         // the actual emptying won't happen until refresh(), which needs &mut self
         // so it's okay for us to return the references here
@@ -529,9 +519,8 @@ where
 
     /// Apply ops in such a way that no values are dropped, only forgotten
     fn apply_first(
-        inner: &mut Inner<K, ManuallyDrop<V>, M, S>,
+        inner: &mut Inner<K, ManuallyDrop<V>, M>,
         op: &mut Operation<K, V>,
-        hasher: &S,
     ) {
         match *op {
             Operation::Replace(ref key, ref mut value) => {
@@ -544,7 +533,7 @@ where
                 // so it will switch back to inline allocation for the subsequent push.
                 vs.shrink_to_fit();
 
-                vs.push(unsafe { value.shallow_copy() }, hasher);
+                vs.push(unsafe { value.shallow_copy() });
             }
             Operation::Clear(ref key) => {
                 inner
@@ -558,7 +547,7 @@ where
                     .data
                     .entry(key.clone())
                     .or_insert_with(Values::new)
-                    .push(unsafe { value.shallow_copy() }, hasher);
+                    .push(unsafe { value.shallow_copy() });
             }
             Operation::Empty(ref key) => {
                 #[cfg(not(feature = "indexed"))]
@@ -604,17 +593,17 @@ where
             },
             Operation::Reserve(ref key, additional) => match inner.data.entry(key.clone()) {
                 Entry::Occupied(mut entry) => {
-                    entry.get_mut().reserve(additional, hasher);
+                    entry.get_mut().reserve(additional);
                 }
                 Entry::Vacant(entry) => {
-                    entry.insert(Values::with_capacity_and_hasher(additional, hasher));
+                    entry.insert(Values::with_capacity_and_hasher(additional));
                 }
             },
         }
     }
 
     /// Apply operations while allowing dropping of values
-    fn apply_second(inner: &mut Inner<K, V, M, S>, op: Operation<K, V>, hasher: &S) {
+    fn apply_second(inner: &mut Inner<K, V, M>, op: Operation<K, V>) {
         match op {
             Operation::Replace(key, value) => {
                 let v = inner.data.entry(key).or_insert_with(Values::new);
@@ -624,7 +613,7 @@ where
 
                 v.shrink_to_fit();
 
-                v.push(value, hasher);
+                v.push(value);
             }
             Operation::Clear(key) => {
                 inner.data.entry(key).or_insert_with(Values::new).clear();
@@ -634,7 +623,7 @@ where
                     .data
                     .entry(key)
                     .or_insert_with(Values::new)
-                    .push(value, hasher);
+                    .push(value);
             }
             Operation::Empty(key) => {
                 #[cfg(not(feature = "indexed"))]
@@ -679,21 +668,20 @@ where
             },
             Operation::Reserve(key, additional) => match inner.data.entry(key) {
                 Entry::Occupied(mut entry) => {
-                    entry.get_mut().reserve(additional, hasher);
+                    entry.get_mut().reserve(additional);
                 }
                 Entry::Vacant(entry) => {
-                    entry.insert(Values::with_capacity_and_hasher(additional, hasher));
+                    entry.insert(Values::with_capacity_and_hasher(additional));
                 }
             },
         }
     }
 }
 
-impl<K, V, M, S> Extend<(K, V)> for WriteHandle<K, V, M, S>
+impl<K, V, M> Extend<(K, V)> for WriteHandle<K, V, M>
 where
-    K: Eq + Hash + Clone,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
@@ -705,14 +693,13 @@ where
 
 // allow using write handle for reads
 use std::ops::Deref;
-impl<K, V, M, S> Deref for WriteHandle<K, V, M, S>
+impl<K, V, M> Deref for WriteHandle<K, V, M>
 where
-    K: Eq + Hash + Clone,
-    S: BuildHasher + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
-    type Target = ReadHandle<K, V, M, S>;
+    type Target = ReadHandle<K, V, M>;
     fn deref(&self) -> &Self::Target {
         &self.r_handle
     }

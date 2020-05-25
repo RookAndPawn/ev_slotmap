@@ -241,7 +241,7 @@ use std::collections::hash_map::RandomState;
 use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::sync::{atomic, Arc, Mutex};
-
+use slotmap::Key;
 mod inner;
 use crate::inner::Inner;
 
@@ -331,18 +331,14 @@ pub use crate::shallow_copy::ShallowCopy;
 ///
 /// In particular, the options dictate the hashing function, meta type, and initial capacity of the
 /// map.
-pub struct Options<M, S>
-where
-    S: BuildHasher,
+pub struct Options<M>
 {
     meta: M,
-    hasher: S,
     capacity: Option<usize>,
 }
 
-impl<M, S> fmt::Debug for Options<M, S>
+impl<M> fmt::Debug for Options<M>
 where
-    S: BuildHasher,
     M: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -353,65 +349,45 @@ where
     }
 }
 
-impl Default for Options<(), RandomState> {
+impl Default for Options<()> {
     fn default() -> Self {
         Options {
             meta: (),
-            hasher: RandomState::default(),
             capacity: None,
         }
     }
 }
 
-impl<M, S> Options<M, S>
-where
-    S: BuildHasher,
+impl<M> Options<M>
 {
     /// Set the initial meta value for the map.
-    pub fn with_meta<M2>(self, meta: M2) -> Options<M2, S> {
+    pub fn with_meta<M2>(self, meta: M2) -> Options<M2> {
         Options {
             meta,
-            hasher: self.hasher,
             capacity: self.capacity,
         }
     }
 
-    /// Set the hasher used for the map.
-    pub fn with_hasher<S2>(self, hash_builder: S2) -> Options<M, S2>
-    where
-        S2: BuildHasher,
-    {
-        Options {
-            meta: self.meta,
-            hasher: hash_builder,
-            capacity: self.capacity,
-        }
-    }
 
     /// Set the initial capacity for the map.
-    pub fn with_capacity(self, capacity: usize) -> Options<M, S> {
+    pub fn with_capacity(self, capacity: usize) -> Options<M> {
         Options {
             meta: self.meta,
-            hasher: self.hasher,
             capacity: Some(capacity),
         }
     }
 
     /// Create the map, and construct the read and write handles used to access it.
     #[allow(clippy::type_complexity)]
-    pub fn construct<K, V>(self) -> (ReadHandle<K, V, M, S>, WriteHandle<K, V, M, S>)
+    pub fn construct<K, V>(self) -> (ReadHandle<K, V, M>, WriteHandle<K, V, M>)
     where
-        K: Eq + Hash + Clone,
-        S: BuildHasher + Clone,
-        V: Eq + Hash + ShallowCopy,
+        K: Eq + Clone + Key,
+        V: Eq + ShallowCopy + Copy,
         M: 'static + Clone,
     {
         let epochs = Default::default();
-        let inner = if let Some(cap) = self.capacity {
-            Inner::with_capacity_and_hasher(self.meta, cap, self.hasher)
-        } else {
-            Inner::with_hasher(self.meta, self.hasher)
-        };
+        let inner = Inner::with_capacity(
+            self.meta, self.capacity.unwrap_or_default());
 
         let mut w_handle = inner.clone();
         w_handle.mark_ready();
@@ -426,12 +402,12 @@ where
 /// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
 #[allow(clippy::type_complexity)]
 pub fn new<K, V>() -> (
-    ReadHandle<K, V, (), RandomState>,
-    WriteHandle<K, V, (), RandomState>,
+    ReadHandle<K, V, ()>,
+    WriteHandle<K, V, ()>,
 )
 where
-    K: Eq + Hash + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
 {
     Options::default().construct()
 }
@@ -443,33 +419,14 @@ where
 pub fn with_meta<K, V, M>(
     meta: M,
 ) -> (
-    ReadHandle<K, V, M, RandomState>,
-    WriteHandle<K, V, M, RandomState>,
+    ReadHandle<K, V, M>,
+    WriteHandle<K, V, M>,
 )
 where
-    K: Eq + Hash + Clone,
-    V: Eq + Hash + ShallowCopy,
+    K: Eq + Clone + Key,
+    V: Eq + ShallowCopy + Copy,
     M: 'static + Clone,
 {
     Options::default().with_meta(meta).construct()
 }
 
-/// Create an empty eventually consistent map with meta information and custom hasher.
-///
-/// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
-#[allow(clippy::type_complexity)]
-pub fn with_hasher<K, V, M, S>(
-    meta: M,
-    hasher: S,
-) -> (ReadHandle<K, V, M, S>, WriteHandle<K, V, M, S>)
-where
-    K: Eq + Hash + Clone,
-    V: Eq + Hash + ShallowCopy,
-    M: 'static + Clone,
-    S: BuildHasher + Clone,
-{
-    Options::default()
-        .with_hasher(hasher)
-        .with_meta(meta)
-        .construct()
-}
