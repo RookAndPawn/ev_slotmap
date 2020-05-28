@@ -1,7 +1,8 @@
-use crate::values::{Values, ValuesIter};
+
 use std::mem;
 use std::sync;
 use std::sync::atomic;
+use std::mem::ManuallyDrop;
 
 /// A guard wrapping a live reference into an evmap.
 ///
@@ -43,6 +44,11 @@ impl<'rh, T: ?Sized> ReadGuard<'rh, T> {
         rg
     }
 }
+impl<'rh, T> ReadGuard<'rh, ManuallyDrop<T>> {
+    pub(crate) fn user_friendly(&self) -> &ReadGuard<'rh, T> {
+        unsafe { &*(self as *const Self as *const ReadGuard<'rh, T>) }
+    }
+}
 
 impl<'rh, T: ?Sized> AsRef<T> for ReadGuard<'rh, T> {
     fn as_ref(&self) -> &T {
@@ -63,14 +69,5 @@ impl<'rh, T: ?Sized> Drop for ReadGuard<'rh, T> {
             (self.epoch + 1) | 1usize << (mem::size_of::<usize>() * 8 - 1),
             atomic::Ordering::Release,
         );
-    }
-}
-
-impl<'rh, T, S> IntoIterator for &'rh ReadGuard<'rh, Values<T, S>> {
-    type Item = &'rh T;
-    type IntoIter = ValuesIter<'rh, T, S>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.t.into_iter()
     }
 }

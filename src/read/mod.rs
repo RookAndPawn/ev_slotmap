@@ -1,8 +1,5 @@
 use crate::inner::Inner;
-use crate::values::Values;
 use slotmap::Key;
-use std::borrow::Borrow;
-use std::iter::FromIterator;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::sync::atomic;
@@ -17,7 +14,12 @@ mod factory;
 pub use factory::ReadHandleFactory;
 
 mod read_ref;
-pub use read_ref::{MapReadRef, ReadGuardIter};
+pub use read_ref::{MapReadRef};
+
+/// Turn an manually drop into something useable
+pub(crate) fn user_friendly<'a, T>(to_fix: &'a ManuallyDrop<T>) -> &'a T {
+    unsafe { &*(to_fix as *const ManuallyDrop<T> as *const T) }
+}
 
 /// A handle that may be used to read from the eventually consistent map.
 ///
@@ -228,10 +230,7 @@ where
     }
 
     /// Internal version of `get_and`
-    fn get_raw<Q: ?Sized>(&self, key: &Q) -> Option<ReadGuard<'_, Values<ManuallyDrop<V>>>>
-    where
-        K: Borrow<Q>,
-        Q: Eq,
+    fn get_raw(&self, key: K) -> Option<ReadGuard<'_, ManuallyDrop<V>>>
     {
         let inner = self.handle()?;
         if !inner.is_ready() {
@@ -251,37 +250,10 @@ where
     /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
     /// function returns `None`.
     #[inline]
-    pub fn get<'rh, Q: ?Sized>(&'rh self, key: &'_ Q) -> Option<ReadGuard<'rh, V>>
-    where
-        K: Borrow<Q>,
-        Q: Eq,
+    pub fn get<'rh>(&'rh self, key: K) -> Option<ReadGuard<'rh, V>>
     {
         // call `borrow` here to monomorphize `get_raw` fewer times
-        Some(self.get_raw(key.borrow())?.map_ref(Values::user_friendly))
-    }
-
-    /// Returns a guarded reference to _one_ value corresponding to the key.
-    ///
-    /// This is mostly intended for use when you are working with no more than one value per key.
-    /// If there are multiple values stored for this key, there are no guarantees to which element
-    /// is returned.
-    ///
-    /// While the guard lives, the map cannot be refreshed.
-    ///
-    /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
-    /// form must match those for the key type.
-    ///
-    /// Note that not all writes will be included with this read -- only those that have been
-    /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
-    /// function returns `None`.
-    #[inline]
-    pub fn get_one<'rh, Q: ?Sized>(&'rh self, key: &'_ Q) -> Option<ReadGuard<'rh, V>>
-    where
-        K: Borrow<Q>,
-        Q: Eq,
-    {
-        self.get_raw(key.borrow())?
-            .map_opt(|x| x.user_friendly().get_one())
+        Some(self.get_raw(key)?.map_ref(user_friendly))
     }
 
     /// Returns a guarded reference to the values corresponding to the key along with the map
@@ -297,10 +269,7 @@ where
     /// function returns `None`.
     ///
     /// If no values exist for the given key, `Some(None, _)` is returned.
-    pub fn meta_get<Q: ?Sized>(&self, key: &Q) -> Option<(Option<ReadGuard<'_,V>>, M)>
-    where
-        K: Borrow<Q>,
-        Q: Eq,
+    pub fn meta_get<Q: ?Sized>(&self, key: K) -> Option<(Option<ReadGuard<'_,V>>, M)>
     {
         let inner = self.handle()?;
         if !inner.is_ready() {
@@ -309,7 +278,7 @@ where
         let meta = inner.meta.clone();
         let res = inner
             .map_opt(|inner| inner.data.get(key))
-            .map(|r| r.map_ref(Values::user_friendly));
+            .map(|r| r.map_ref(user_friendly));
         Some((res, meta))
     }
 
@@ -324,49 +293,10 @@ where
     ///
     /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
     /// form *must* match those for the key type.
-    pub fn contains_key<Q: ?Sized>(&self, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-        Q: Eq,
+    pub fn contains_key(&self, key: K) -> bool
     {
         self.read().map_or(false, |x| x.contains_key(key))
     }
 
-    /// Read all values in the map, and transform them into a new collection.
-    pub fn map_into<Map, Collector, Target>(&self, mut f: Map) -> Collector
-    where
-        Map: FnMut(&K, &V) -> Target,
-        Collector: FromIterator<Target>,
-    {
-        Collector::from_iter(self.read().iter().flatten().map(|(k, v)| f(k, v)))
-    }
 }
 
-#[cfg(test)]
-mod test {
-    use crate::new;
-
-    // the idea of this test is to allocate 64 elements, and only use 17. The vector will
-    // probably try to fit either exactly the length, to the next highest power of 2 from
-    // the length, or something else entirely, E.g. 17, 32, etc.,
-    // but it should always end up being smaller than the original 64 elements reserved.
-    #[test]
-    fn reserve_and_fit() {
-        const MIN: usize = (1 << 4) + 1;
-        const MAX: usize = 1 << 6;
-
-        let (r, mut w) = new();
-
-        w.reserve(0, MAX).refresh();
-
-        assert!(r.get_raw(&0).unwrap().capacity() >= MAX);
-
-        for i in 0..MIN {
-            w.insert(0, i);
-        }
-
-        w.fit_all().refresh();
-
-        assert!(r.get_raw(&0).unwrap().capacity() < MAX);
-    }
-}

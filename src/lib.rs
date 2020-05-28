@@ -237,16 +237,11 @@
 )]
 #![allow(clippy::type_complexity)]
 
-use std::collections::hash_map::RandomState;
 use std::fmt;
-use std::hash::{BuildHasher, Hash};
 use std::sync::{atomic, Arc, Mutex};
 use slotmap::Key;
 mod inner;
 use crate::inner::Inner;
-
-mod values;
-pub use values::Values;
 
 pub(crate) type Epochs = Arc<Mutex<slab::Slab<Arc<atomic::AtomicUsize>>>>;
 
@@ -286,43 +281,21 @@ impl<V> fmt::Debug for Predicate<V> {
 #[non_exhaustive]
 #[derive(PartialEq, Eq, Debug)]
 pub enum Operation<K, V> {
-    /// Replace the set of entries for this key with this value.
+    /// Replace the value for this key with this value.
     Replace(K, V),
-    /// Add this value to the set of entries for this key.
-    Add(K, V),
-    /// Remove this value from the set of entries for this key.
-    Remove(K, V),
-    /// Remove the value set for this key.
-    Empty(K),
-    #[cfg(feature = "indexed")]
-    /// Drop a key at a random index
-    EmptyRandom(usize),
-    /// Remove all values in the value set for this key.
-    Clear(K),
-    /// Remove all values for all keys.
-    ///
-    /// Note that this will iterate once over all the keys internally.
-    Purge,
-    /// Retains all values matching the given predicate.
-    Retain(K, Predicate<V>),
-    /// Shrinks [`Values`] to their minimum necessary size, freeing memory
-    /// and potentially improving cache locality.
-    ///
-    /// If no key is given, all `Values` will shrink to fit.
-    Fit(Option<K>),
-    /// Reserves capacity for some number of additional elements in [`Values`]
-    /// for the given key. If the given key does not exist, allocate an empty
-    /// `Values` with the given capacity.
-    ///
-    /// This can improve performance by pre-allocating space for large bags of values.
-    Reserve(K, usize),
+    /// Add this value to the map.
+    Add(V),
+    /// Remove the value with this key from the map.
+    Remove(K),
+    /// Clear the map.
+    Clear
 }
 
 mod write;
 pub use crate::write::WriteHandle;
 
 mod read;
-pub use crate::read::{MapReadRef, ReadGuard, ReadGuardIter, ReadHandle, ReadHandleFactory};
+pub use crate::read::{MapReadRef, ReadGuard, ReadHandle, ReadHandleFactory};
 
 pub mod shallow_copy;
 pub use crate::shallow_copy::ShallowCopy;
