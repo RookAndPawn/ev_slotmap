@@ -1,5 +1,5 @@
-extern crate evmap;
 
+use one_way_slot_map::define_key_type;
 use std::iter::FromIterator;
 
 macro_rules! assert_match {
@@ -11,694 +11,690 @@ macro_rules! assert_match {
     };
 }
 
+define_key_type!(TestKey<()> : Default + Clone);
+
 #[test]
 fn it_works() {
-    let x = ('x', 42);
+    let x = 42;
 
-    let (r, mut w) = evmap::new();
+    let (r, mut w) = ev_slotmap::new();
 
     // the map is uninitialized, so all lookups should return None
-    assert_match!(r.get(&x.0), None);
+    assert_match!(r.get(&TestKey::default()), None);
 
     w.refresh();
 
     // after the first refresh, it is empty, but ready
-    assert_match!(r.get(&x.0), None);
-    // since we're not using `meta`, we get ()
-    assert_match!(r.meta_get(&x.0), Some((None, ())));
+    assert_match!(r.get(&TestKey::default()), None);
 
-    w.insert(x.0, x);
+    let key = w.insert((), x);
 
-    // it is empty even after an add (we haven't refresh yet)
-    assert_match!(r.get(&x.0), None);
-    assert_match!(r.meta_get(&x.0), Some((None, ())));
+    assert_match!(r.get(&key), Some(x));
+    assert_eq!(r.contains_key(&key), true);
 
     w.refresh();
+
+    assert_match!(r.get(&key), Some(x));
+    assert_eq!(r.contains_key(&key), true);
+
+    let x = 54;
+    let y = 69;
+
+    w.update(key.clone(), x);
+
+    let key2 = w.insert((), y);
+
+    assert_match!(r.get(&key), Some(x));
+    assert_eq!(r.contains_key(&key), true);
+
+    assert_match!(r.get(&key2), Some(y));
+    w.remove(key.clone());
 
     // but after the swap, the record is there!
-    assert_match!(r.get(&x.0).map(|rs| rs.len()), Some(1));
-    assert_match!(
-        r.meta_get(&x.0).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((Some(1), ()))
-    );
-    assert_match!(
-        r.get(&x.0)
-            .map(|rs| rs.iter().any(|v| v.0 == x.0 && v.1 == x.1)),
-        Some(true)
-    );
+    assert_match!(r.get(&key), None);
+    assert_eq!(r.contains_key(&key), false);
 
-    // non-existing records return None
-    assert_match!(r.get(&'y').map(|rs| rs.len()), None);
-    assert_match!(
-        r.meta_get(&'y').map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((None, ()))
-    );
+    assert_match!(r.get(&key2), Some(y));
+    assert_eq!(r.contains_key(&key2), true);
 
-    // if we purge, the readers still see the values
-    w.purge();
-    assert_match!(
-        r.get(&x.0)
-            .map(|rs| rs.iter().any(|v| v.0 == x.0 && v.1 == x.1)),
-        Some(true)
-    );
+    w.clear();
 
-    // but once we refresh, things will be empty
-    w.refresh();
-    assert_match!(r.get(&x.0).map(|rs| rs.len()), None);
-    assert_match!(
-        r.meta_get(&x.0).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((None, ()))
-    );
+    assert_match!(r.get(&key), None);
+    assert_eq!(r.contains_key(&key), false);
+
+    assert_match!(r.get(&key2), None);
+    assert_eq!(r.contains_key(&key2), false);
 }
 
-#[test]
-fn mapref() {
-    let x = ('x', 42);
+// #[test]
+// fn mapref() {
+//     let x = ('x', 42);
 
-    let (r, mut w) = evmap::new();
+//     let (r, mut w) = evmap::new();
 
-    // get a read ref to the map
-    // scope to ensure it gets dropped and doesn't stall refresh
-    {
-        assert!(r.read().is_none());
-    }
+//     // get a read ref to the map
+//     // scope to ensure it gets dropped and doesn't stall refresh
+//     {
+//         assert!(r.read().is_none());
+//     }
 
-    w.refresh();
+//     w.refresh();
 
-    {
-        let map = r.read().unwrap();
-        // after the first refresh, it is empty, but ready
-        assert!(map.is_empty());
-        assert!(!map.contains_key(&x.0));
-        assert!(map.get(&x.0).is_none());
-        // since we're not using `meta`, we get ()
-        assert_eq!(map.meta(), &());
-    }
+//     {
+//         let map = r.read().unwrap();
+//         // after the first refresh, it is empty, but ready
+//         assert!(map.is_empty());
+//         assert!(!map.contains_key(&x.0));
+//         assert!(map.get(&x.0).is_none());
+//         // since we're not using `meta`, we get ()
+//         assert_eq!(map.meta(), &());
+//     }
 
-    w.insert(x.0, x);
+//     w.insert(x.0, x);
 
-    {
-        let map = r.read().unwrap();
-        // it is empty even after an add (we haven't refresh yet)
-        assert!(map.is_empty());
-        assert!(!map.contains_key(&x.0));
-        assert!(map.get(&x.0).is_none());
-        assert_eq!(map.meta(), &());
-    }
+//     {
+//         let map = r.read().unwrap();
+//         // it is empty even after an add (we haven't refresh yet)
+//         assert!(map.is_empty());
+//         assert!(!map.contains_key(&x.0));
+//         assert!(map.get(&x.0).is_none());
+//         assert_eq!(map.meta(), &());
+//     }
 
-    w.refresh();
+//     w.refresh();
 
-    {
-        let map = r.read().unwrap();
+//     {
+//         let map = r.read().unwrap();
 
-        // but after the swap, the record is there!
-        assert!(!map.is_empty());
-        assert!(map.contains_key(&x.0));
-        assert_eq!(map.get(&x.0).unwrap().len(), 1);
-        assert_eq!(map[&x.0].len(), 1);
-        assert_eq!(map.meta(), &());
-        assert!(map
-            .get(&x.0)
-            .unwrap()
-            .iter()
-            .any(|v| v.0 == x.0 && v.1 == x.1));
+//         // but after the swap, the record is there!
+//         assert!(!map.is_empty());
+//         assert!(map.contains_key(&x.0));
+//         assert_eq!(map.get(&x.0).unwrap().len(), 1);
+//         assert_eq!(map[&x.0].len(), 1);
+//         assert_eq!(map.meta(), &());
+//         assert!(map
+//             .get(&x.0)
+//             .unwrap()
+//             .iter()
+//             .any(|v| v.0 == x.0 && v.1 == x.1));
 
-        // non-existing records return None
-        assert!(map.get(&'y').is_none());
-        assert_eq!(map.meta(), &());
+//         // non-existing records return None
+//         assert!(map.get(&'y').is_none());
+//         assert_eq!(map.meta(), &());
 
-        // if we purge, the readers still see the values
-        w.purge();
+//         // if we purge, the readers still see the values
+//         w.purge();
 
-        assert!(map
-            .get(&x.0)
-            .unwrap()
-            .iter()
-            .any(|v| v.0 == x.0 && v.1 == x.1));
-    }
+//         assert!(map
+//             .get(&x.0)
+//             .unwrap()
+//             .iter()
+//             .any(|v| v.0 == x.0 && v.1 == x.1));
+//     }
 
-    // but once we refresh, things will be empty
-    w.refresh();
+//     // but once we refresh, things will be empty
+//     w.refresh();
 
-    {
-        let map = r.read().unwrap();
-        assert!(map.is_empty());
-        assert!(!map.contains_key(&x.0));
-        assert!(map.get(&x.0).is_none());
-        assert_eq!(map.meta(), &());
-    }
+//     {
+//         let map = r.read().unwrap();
+//         assert!(map.is_empty());
+//         assert!(!map.contains_key(&x.0));
+//         assert!(map.get(&x.0).is_none());
+//         assert_eq!(map.meta(), &());
+//     }
 
-    drop(w);
-    {
-        let map = r.read();
-        assert!(map.is_none(), "the map should have been destroyed");
-    }
-}
+//     drop(w);
+//     {
+//         let map = r.read();
+//         assert!(map.is_none(), "the map should have been destroyed");
+//     }
+// }
 
-#[test]
-#[cfg_attr(miri, ignore)]
-// https://github.com/rust-lang/miri/issues/658
-fn paniced_reader_doesnt_block_writer() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.refresh();
+// #[test]
+// #[cfg_attr(miri, ignore)]
+// // https://github.com/rust-lang/miri/issues/658
+// fn paniced_reader_doesnt_block_writer() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.refresh();
 
-    // reader panics
-    let r = std::panic::catch_unwind(move || r.get(&1).map(|_| panic!()));
-    assert!(r.is_err());
+//     // reader panics
+//     let r = std::panic::catch_unwind(move || r.get(&1).map(|_| panic!()));
+//     assert!(r.is_err());
 
-    // writer should still be able to continue
-    w.insert(1, "b");
-    w.refresh();
-    w.refresh();
-}
+//     // writer should still be able to continue
+//     w.insert(1, "b");
+//     w.refresh();
+//     w.refresh();
+// }
 
-#[test]
-fn flush_noblock() {
-    let x = ('x', 42);
+// #[test]
+// fn flush_noblock() {
+//     let x = ('x', 42);
 
-    let (r, mut w) = evmap::new();
-    w.insert(x.0, x);
-    w.refresh();
-    assert_eq!(r.get(&x.0).map(|rs| rs.len()), Some(1));
+//     let (r, mut w) = evmap::new();
+//     w.insert(x.0, x);
+//     w.refresh();
+//     assert_eq!(r.get(&x.0).map(|rs| rs.len()), Some(1));
 
-    // pin the epoch
-    let _map = r.read();
-    // refresh would hang here, but flush won't
-    assert!(w.pending().is_empty());
-    w.flush();
-}
+//     // pin the epoch
+//     let _map = r.read();
+//     // refresh would hang here, but flush won't
+//     assert!(w.pending().is_empty());
+//     w.flush();
+// }
 
 #[test]
 fn read_after_drop() {
-    let x = ('x', 42);
+    let x = 42;
 
-    let (r, mut w) = evmap::new();
-    w.insert(x.0, x);
+    let (r, mut w) = ev_slotmap::new();
+
+    // the map is uninitialized, so all lookups should return None
+    assert_match!(r.get(&TestKey::default()), None);
+
+    let key = w.insert((), x);
     w.refresh();
-    assert_eq!(r.get(&x.0).map(|rs| rs.len()), Some(1));
+    assert_match!(r.get(&key), Some(x));
 
     // once we drop the writer, the readers should see empty maps
     drop(w);
-    assert_eq!(r.get(&x.0).map(|rs| rs.len()), None);
-    assert_eq!(
-        r.meta_get(&x.0).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        None
-    );
+    assert_match!(r.get(&key), None);
 }
 
-#[test]
-fn clone_types() {
-    let x = evmap::shallow_copy::CopyValue::from(b"xyz");
+// #[test]
+// fn clone_types() {
+//     let x = evmap::shallow_copy::CopyValue::from(b"xyz");
 
-    let (r, mut w) = evmap::new();
-    w.insert(&*x, x);
-    w.refresh();
+//     let (r, mut w) = evmap::new();
+//     w.insert(&*x, x);
+//     w.refresh();
 
-    assert_eq!(r.get(&*x).map(|rs| rs.len()), Some(1));
-    assert_eq!(
-        r.meta_get(&*x).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((Some(1), ()))
-    );
-    assert_eq!(r.get(&*x).map(|rs| rs.iter().any(|v| *v == x)), Some(true));
-}
+//     assert_eq!(r.get(&*x).map(|rs| rs.len()), Some(1));
+//     assert_eq!(
+//         r.meta_get(&*x).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
+//         Some((Some(1), ()))
+//     );
+//     assert_eq!(r.get(&*x).map(|rs| rs.iter().any(|v| *v == x)), Some(true));
+// }
 
-#[test]
-#[cfg_attr(miri, ignore)]
-fn busybusybusy_fast() {
-    busybusybusy_inner(false);
-}
-#[test]
-#[cfg_attr(miri, ignore)]
-fn busybusybusy_slow() {
-    busybusybusy_inner(true);
-}
+// #[test]
+// #[cfg_attr(miri, ignore)]
+// fn busybusybusy_fast() {
+//     busybusybusy_inner(false);
+// }
 
-fn busybusybusy_inner(slow: bool) {
-    use std::thread;
-    use std::time;
+// #[test]
+// #[cfg_attr(miri, ignore)]
+// fn busybusybusy_slow() {
+//     busybusybusy_inner(true);
+// }
 
-    let threads = 4;
-    let mut n = 1000;
-    if !slow {
-        n *= 100;
-    }
-    let (r, mut w) = evmap::new();
-    w.refresh();
+// fn busybusybusy_inner(slow: bool) {
+//     use std::thread;
+//     use std::time;
 
-    let rs: Vec<_> = (0..threads)
-        .map(|_| {
-            let r = r.clone();
-            thread::spawn(move || {
-                // rustfmt
-                for i in 0..n {
-                    let i = i.into();
-                    loop {
-                        let map = r.read().unwrap();
-                        let rs = map.get(&i);
-                        if rs.is_some() && slow {
-                            thread::sleep(time::Duration::from_millis(2));
-                        }
-                        match rs {
-                            Some(rs) => {
-                                assert_eq!(rs.len(), 1);
-                                assert!(rs.capacity() >= rs.len());
-                                assert_eq!(rs.iter().next().unwrap(), &i);
-                                break;
-                            }
-                            None => {
-                                thread::yield_now();
-                            }
-                        }
-                    }
-                }
-            })
-        })
-        .collect();
+//     let threads = 4;
+//     let mut n = 1000;
+//     if !slow {
+//         n *= 100;
+//     }
+//     let (r, mut w) = evmap::new();
+//     w.refresh();
 
-    for i in 0..n {
-        w.insert(i, i);
-        w.refresh();
-    }
+//     let rs: Vec<_> = (0..threads)
+//         .map(|_| {
+//             let r = r.clone();
+//             thread::spawn(move || {
+//                 // rustfmt
+//                 for i in 0..n {
+//                     let i = i.into();
+//                     loop {
+//                         let map = r.read().unwrap();
+//                         let rs = map.get(i);
+//                         if rs.is_some() && slow {
+//                             thread::sleep(time::Duration::from_millis(2));
+//                         }
+//                         match rs {
+//                             Some(rs) => {
+//                                 assert_eq!(rs.len(), 1);
+//                                 assert!(rs.capacity() >= rs.len());
+//                                 assert_eq!(rs.iter().next().unwrap(), &i);
+//                                 break;
+//                             }
+//                             None => {
+//                                 thread::yield_now();
+//                             }
+//                         }
+//                     }
+//                 }
+//             })
+//         })
+//         .collect();
 
-    for r in rs {
-        r.join().unwrap();
-    }
-}
+//     for i in 0..n {
+//         w.insert(i, i);
+//         w.refresh();
+//     }
 
-#[test]
-#[cfg_attr(miri, ignore)]
-fn busybusybusy_heap() {
-    use std::thread;
+//     for r in rs {
+//         r.join().unwrap();
+//     }
+// }
 
-    let threads = 2;
-    let n = 1000;
-    let (r, mut w) = evmap::new::<_, Vec<_>>();
-    w.refresh();
+// #[test]
+// #[cfg_attr(miri, ignore)]
+// fn busybusybusy_heap() {
+//     use std::thread;
 
-    let rs: Vec<_> = (0..threads)
-        .map(|_| {
-            let r = r.clone();
-            thread::spawn(move || {
-                for i in 0..n {
-                    let i = i.into();
-                    loop {
-                        let map = r.read().unwrap();
-                        let rs = map.get(&i);
-                        match rs {
-                            Some(rs) => {
-                                assert_eq!(rs.len(), 1);
-                                assert_eq!(rs.iter().next().unwrap().len(), i);
-                                break;
-                            }
-                            None => {
-                                thread::yield_now();
-                            }
-                        }
-                    }
-                }
-            })
-        })
-        .collect();
+//     let threads = 2;
+//     let n = 1000;
+//     let (r, mut w) = evmap::new::<_, Vec<_>>();
+//     w.refresh();
 
-    for i in 0..n {
-        w.insert(i, (0..i).collect());
-        w.refresh();
-    }
+//     let rs: Vec<_> = (0..threads)
+//         .map(|_| {
+//             let r = r.clone();
+//             thread::spawn(move || {
+//                 for i in 0..n {
+//                     let i = i.into();
+//                     loop {
+//                         let map = r.read().unwrap();
+//                         let rs = map.get(&i);
+//                         match rs {
+//                             Some(rs) => {
+//                                 assert_eq!(rs.len(), 1);
+//                                 assert_eq!(rs.iter().next().unwrap().len(), i);
+//                                 break;
+//                             }
+//                             None => {
+//                                 thread::yield_now();
+//                             }
+//                         }
+//                     }
+//                 }
+//             })
+//         })
+//         .collect();
 
-    for r in rs {
-        r.join().unwrap();
-    }
-}
+//     for i in 0..n {
+//         w.insert(i, (0..i).collect());
+//         w.refresh();
+//     }
 
-#[test]
-fn minimal_query() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.refresh();
-    w.insert(1, "b");
+//     for r in rs {
+//         r.join().unwrap();
+//     }
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"a")).unwrap());
-}
+// #[test]
+// fn minimal_query() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.refresh();
+//     w.insert(1, "b");
 
-#[test]
-fn clear_vs_empty() {
-    let (r, mut w) = evmap::new::<_, ()>();
-    w.refresh();
-    assert_eq!(r.get(&1).map(|rs| rs.len()), None);
-    w.clear(1);
-    w.refresh();
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
-    w.empty(1);
-    w.refresh();
-    assert_eq!(r.get(&1).map(|rs| rs.len()), None);
-    // and again to test both apply_first and apply_second
-    w.clear(1);
-    w.refresh();
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
-    w.empty(1);
-    w.refresh();
-    assert_eq!(r.get(&1).map(|rs| rs.len()), None);
-}
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"a")).unwrap());
+// }
 
-#[test]
-fn non_copy_values() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a".to_string());
-    w.refresh();
-    w.insert(1, "b".to_string());
+// #[test]
+// fn clear_vs_empty() {
+//     let (r, mut w) = evmap::new::<_, ()>();
+//     w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), None);
+//     w.clear(1);
+//     w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
+//     w.empty(1);
+//     w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), None);
+//     // and again to test both apply_first and apply_second
+//     w.clear(1);
+//     w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
+//     w.empty(1);
+//     w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), None);
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == "a")).unwrap());
-}
+// #[test]
+// fn non_copy_values() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a".to_string());
+//     w.refresh();
+//     w.insert(1, "b".to_string());
 
-#[test]
-fn non_minimal_query() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.refresh();
-    w.insert(1, "c");
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == "a")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(2));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"a")).unwrap());
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
-}
+// #[test]
+// fn non_minimal_query() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.refresh();
+//     w.insert(1, "c");
 
-#[test]
-fn absorb_negative_immediate() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.remove(1, "a");
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(2));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"a")).unwrap());
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
-}
+// #[test]
+// fn absorb_negative_immediate() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.remove(1, "a");
+//     w.refresh();
 
-#[test]
-fn absorb_negative_later() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.refresh();
-    w.remove(1, "a");
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
-}
+// #[test]
+// fn absorb_negative_later() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.refresh();
+//     w.remove(1, "a");
+//     w.refresh();
 
-#[test]
-fn absorb_multi() {
-    let (r, mut w) = evmap::new();
-    w.extend(vec![(1, "a"), (1, "b")]);
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(2));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"a")).unwrap());
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
+// #[test]
+// fn absorb_multi() {
+//     let (r, mut w) = evmap::new();
+//     w.extend(vec![(1, "a"), (1, "b")]);
+//     w.refresh();
 
-    w.remove(1, "a");
-    w.insert(1, "c");
-    w.remove(1, "c");
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(2));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"a")).unwrap());
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
-}
+//     w.remove(1, "a");
+//     w.insert(1, "c");
+//     w.remove(1, "c");
+//     w.refresh();
 
-#[test]
-fn empty() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.empty(1);
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"b")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), None);
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
-}
+// #[test]
+// fn empty() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.empty(1);
+//     w.refresh();
 
-#[test]
-#[cfg(feature = "indexed")]
-fn empty_random() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.empty_at_index(0);
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), None);
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
+// }
 
-    // should only have one value set left
-    assert_eq!(r.len(), 1);
-    // one of them must have gone away
-    assert!(
-        (!r.contains_key(&1) && r.contains_key(&2)) || (r.contains_key(&1) && !r.contains_key(&2))
-    );
-}
+// #[test]
+// #[cfg(feature = "indexed")]
+// fn empty_random() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.empty_at_index(0);
+//     w.refresh();
 
-#[test]
-fn empty_post_refresh() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.refresh();
-    w.empty(1);
-    w.refresh();
+//     // should only have one value set left
+//     assert_eq!(r.len(), 1);
+//     // one of them must have gone away
+//     assert!(
+//         (!r.contains_key(&1) && r.contains_key(&2)) || (r.contains_key(&1) && !r.contains_key(&2))
+//     );
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), None);
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
-}
+// #[test]
+// fn empty_post_refresh() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.refresh();
+//     w.empty(1);
+//     w.refresh();
 
-#[test]
-fn clear() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.clear(1);
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), None);
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
+// #[test]
+// fn clear() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.clear(1);
+//     w.refresh();
 
-    w.clear(2);
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(0));
+//     w.clear(2);
+//     w.refresh();
 
-    w.empty(1);
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(0));
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(0));
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), None);
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(0));
-}
+//     w.empty(1);
+//     w.refresh();
 
-#[test]
-fn replace() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.update(1, "x");
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), None);
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(0));
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"x")).unwrap());
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
-}
+// #[test]
+// fn replace() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.update(1, "x");
+//     w.refresh();
 
-#[test]
-fn replace_post_refresh() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.refresh();
-    w.update(1, "x");
-    w.refresh();
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"x")).unwrap());
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
+// }
 
-    assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"x")).unwrap());
-    assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
-    assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
-}
+// #[test]
+// fn replace_post_refresh() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.refresh();
+//     w.update(1, "x");
+//     w.refresh();
 
-#[test]
-fn with_meta() {
-    let (r, mut w) = evmap::with_meta::<usize, usize, _>(42);
-    assert_eq!(
-        r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        None
-    );
-    w.refresh();
-    assert_eq!(
-        r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((None, 42))
-    );
-    w.set_meta(43);
-    assert_eq!(
-        r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((None, 42))
-    );
-    w.refresh();
-    assert_eq!(
-        r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
-        Some((None, 43))
-    );
-}
+//     assert_eq!(r.get(&1).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&1).map(|rs| rs.iter().any(|r| r == &"x")).unwrap());
+//     assert_eq!(r.get(&2).map(|rs| rs.len()), Some(1));
+//     assert!(r.get(&2).map(|rs| rs.iter().any(|r| r == &"c")).unwrap());
+// }
 
-#[test]
-fn map_into() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.refresh();
-    w.insert(1, "x");
+// #[test]
+// fn with_meta() {
+//     let (r, mut w) = evmap::with_meta::<usize, usize, _>(42);
+//     assert_eq!(
+//         r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
+//         None
+//     );
+//     w.refresh();
+//     assert_eq!(
+//         r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
+//         Some((None, 42))
+//     );
+//     w.set_meta(43);
+//     assert_eq!(
+//         r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
+//         Some((None, 42))
+//     );
+//     w.refresh();
+//     assert_eq!(
+//         r.meta_get(&1).map(|(rs, m)| (rs.map(|rs| rs.len()), m)),
+//         Some((None, 43))
+//     );
+// }
 
-    use std::collections::HashMap;
-    let copy: HashMap<_, Vec<_>> = r.map_into(|&k, vs| (k, Vec::from_iter(vs.iter().cloned())));
+// #[test]
+// fn map_into() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.refresh();
+//     w.insert(1, "x");
 
-    assert_eq!(copy.len(), 2);
-    assert!(copy.contains_key(&1));
-    assert!(copy.contains_key(&2));
-    assert_eq!(copy[&1].len(), 2);
-    assert_eq!(copy[&2].len(), 1);
-    assert!(copy[&1].contains(&"a"));
-    assert!(copy[&1].contains(&"b"));
-    assert!(copy[&2].contains(&"c"));
-}
+//     use std::collections::HashMap;
+//     let copy: HashMap<_, Vec<_>> = r.map_into(|&k, vs| (k, Vec::from_iter(vs.iter().cloned())));
 
-#[test]
-#[cfg_attr(miri, ignore)]
-fn clone_churn() {
-    use std::thread;
-    let (r, mut w) = evmap::new();
+//     assert_eq!(copy.len(), 2);
+//     assert!(copy.contains_key(&1));
+//     assert!(copy.contains_key(&2));
+//     assert_eq!(copy[&1].len(), 2);
+//     assert_eq!(copy[&2].len(), 1);
+//     assert!(copy[&1].contains(&"a"));
+//     assert!(copy[&1].contains(&"b"));
+//     assert!(copy[&2].contains(&"c"));
+// }
 
-    thread::spawn(move || loop {
-        let r = r.clone();
-        if r.get(&1).is_some() {
-            thread::yield_now();
-        }
-    });
+// #[test]
+// #[cfg_attr(miri, ignore)]
+// fn clone_churn() {
+//     use std::thread;
+//     let (r, mut w) = evmap::new();
 
-    for i in 0..1000 {
-        w.insert(1, i);
-        w.refresh();
-    }
-}
+//     thread::spawn(move || loop {
+//         let r = r.clone();
+//         if r.get(&1).is_some() {
+//             thread::yield_now();
+//         }
+//     });
 
-#[test]
-#[cfg_attr(miri, ignore)]
-fn bigbag() {
-    use std::thread;
-    let (r, mut w) = evmap::new();
-    w.refresh();
+//     for i in 0..1000 {
+//         w.insert(1, i);
+//         w.refresh();
+//     }
+// }
 
-    let ndistinct = 32;
+// #[test]
+// #[cfg_attr(miri, ignore)]
+// fn bigbag() {
+//     use std::thread;
+//     let (r, mut w) = evmap::new();
+//     w.refresh();
 
-    let jh = thread::spawn(move || loop {
-        let map = if let Some(map) = r.read() { map } else { break };
-        if let Some(rs) = map.get(&1) {
-            assert!(rs.len() <= ndistinct * (ndistinct - 1));
-            let mut found = true;
-            for i in 0..ndistinct {
-                if found {
-                    if !rs.contains(&[i][..]) {
-                        found = false;
-                    }
-                } else {
-                    assert!(!found);
-                }
-            }
-            assert_eq!(rs.into_iter().count(), rs.len());
-            drop(map);
-            thread::yield_now();
-        }
-    });
+//     let ndistinct = 32;
 
-    for _ in 0..64 {
-        for i in 1..ndistinct {
-            // add some duplicates too
-            // total:
-            for _ in 0..i {
-                w.insert(1, vec![i]);
-                w.refresh();
-            }
-        }
-        for i in (1..ndistinct).rev() {
-            for _ in 0..i {
-                w.remove(1, vec![i]);
-                w.fit(1);
-                w.refresh();
-            }
-        }
-        w.empty(1);
-    }
+//     let jh = thread::spawn(move || loop {
+//         let map = if let Some(map) = r.read() { map } else { break };
+//         if let Some(rs) = map.get(&1) {
+//             assert!(rs.len() <= ndistinct * (ndistinct - 1));
+//             let mut found = true;
+//             for i in 0..ndistinct {
+//                 if found {
+//                     if !rs.contains(&[i][..]) {
+//                         found = false;
+//                     }
+//                 } else {
+//                     assert!(!found);
+//                 }
+//             }
+//             assert_eq!(rs.into_iter().count(), rs.len());
+//             drop(map);
+//             thread::yield_now();
+//         }
+//     });
 
-    drop(w);
-    jh.join().unwrap();
-}
+//     for _ in 0..64 {
+//         for i in 1..ndistinct {
+//             // add some duplicates too
+//             // total:
+//             for _ in 0..i {
+//                 w.insert(1, vec![i]);
+//                 w.refresh();
+//             }
+//         }
+//         for i in (1..ndistinct).rev() {
+//             for _ in 0..i {
+//                 w.remove(1, vec![i]);
+//                 w.fit(1);
+//                 w.refresh();
+//             }
+//         }
+//         w.empty(1);
+//     }
 
-#[test]
-fn foreach() {
-    let (r, mut w) = evmap::new();
-    w.insert(1, "a");
-    w.insert(1, "b");
-    w.insert(2, "c");
-    w.refresh();
-    w.insert(1, "x");
+//     drop(w);
+//     jh.join().unwrap();
+// }
 
-    let r = r.read().unwrap();
-    for (k, vs) in &r {
-        match k {
-            1 => {
-                assert_eq!(vs.len(), 2);
-                assert!(vs.contains(&"a"));
-                assert!(vs.contains(&"b"));
-            }
-            2 => {
-                assert_eq!(vs.len(), 1);
-                assert!(vs.contains(&"c"));
-            }
-            _ => unreachable!(),
-        }
-    }
-}
+// #[test]
+// fn foreach() {
+//     let (r, mut w) = evmap::new();
+//     w.insert(1, "a");
+//     w.insert(1, "b");
+//     w.insert(2, "c");
+//     w.refresh();
+//     w.insert(1, "x");
 
-#[test]
-fn retain() {
-    // do same operations on a plain vector
-    // to verify retain implementation
-    let mut v = Vec::new();
-    let (r, mut w) = evmap::new();
+//     let r = r.read().unwrap();
+//     for (k, vs) in &r {
+//         match k {
+//             1 => {
+//                 assert_eq!(vs.len(), 2);
+//                 assert!(vs.contains(&"a"));
+//                 assert!(vs.contains(&"b"));
+//             }
+//             2 => {
+//                 assert_eq!(vs.len(), 1);
+//                 assert!(vs.contains(&"c"));
+//             }
+//             _ => unreachable!(),
+//         }
+//     }
+// }
 
-    for i in 0..50 {
-        w.insert(0, i);
-        v.push(i);
-    }
+// #[test]
+// fn retain() {
+//     // do same operations on a plain vector
+//     // to verify retain implementation
+//     let mut v = Vec::new();
+//     let (r, mut w) = evmap::new();
 
-    fn is_even(num: &i32, _: bool) -> bool {
-        num % 2 == 0
-    }
+//     for i in 0..50 {
+//         w.insert(0, i);
+//         v.push(i);
+//     }
 
-    unsafe { w.retain(0, is_even) }.refresh();
-    v.retain(|i| is_even(i, false));
+//     fn is_even(num: &i32, _: bool) -> bool {
+//         num % 2 == 0
+//     }
 
-    let mut vs = r
-        .get(&0)
-        .map(|nums| Vec::from_iter(nums.iter().cloned()))
-        .unwrap();
-    vs.sort();
-    assert_eq!(v, &*vs);
-}
+//     unsafe { w.retain(0, is_even) }.refresh();
+//     v.retain(|i| is_even(i, false));
+
+//     let mut vs = r
+//         .get(&0)
+//         .map(|nums| Vec::from_iter(nums.iter().cloned()))
+//         .unwrap();
+//     vs.sort();
+//     assert_eq!(v, &*vs);
+// }

@@ -1,5 +1,5 @@
 use crate::inner::Inner;
-use slotmap::Key;
+use one_way_slot_map::SlotMapKey as Key;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::sync::atomic;
@@ -14,7 +14,7 @@ mod factory;
 pub use factory::ReadHandleFactory;
 
 mod read_ref;
-pub use read_ref::{MapReadRef};
+pub use read_ref::MapReadRef;
 
 /// Turn an manually drop into something useable
 pub(crate) fn user_friendly<'a, T>(to_fix: &'a ManuallyDrop<T>) -> &'a T {
@@ -25,13 +25,12 @@ pub(crate) fn user_friendly<'a, T>(to_fix: &'a ManuallyDrop<T>) -> &'a T {
 ///
 /// Note that any changes made to the map will not be made visible until the writer calls
 /// `refresh()`. In other words, all operations performed on a `ReadHandle` will *only* see writes
-/// to the map that preceeded the last call to `refresh()`.
-pub struct ReadHandle<K, V, M = ()>
+/// to the map that preceded the last call to `refresh()`.
+pub struct ReadHandle<K, P, V>
 where
-    K: Eq + Key,
-    V: Copy
+    K: Key<P>,
 {
-    pub(crate) inner: sync::Arc<AtomicPtr<Inner<K, ManuallyDrop<V>, M>>>,
+    pub(crate) inner: sync::Arc<AtomicPtr<Inner<ManuallyDrop<V>>>>,
     pub(crate) epochs: crate::Epochs,
     epoch: sync::Arc<sync::atomic::AtomicUsize>,
     epoch_i: usize,
@@ -41,15 +40,17 @@ where
     // call `with_handle` at the same time. We *could* keep it `Sync` and make `with_handle`
     // require `&mut self`, but that seems overly excessive. It would also mean that all other
     // methods on `ReadHandle` would now take `&mut self`, *and* that `ReadHandle` can no longer be
-    // `Clone`. Since optin_builtin_traits is still an unstable feature, we use this hack to make
+    // `Clone`. Since opt-in_builtin_traits is still an unstable feature, we use this hack to make
     // `ReadHandle` be marked as `!Sync` (since it contains an `Cell` which is `!Sync`).
     _not_sync_no_feature: PhantomData<cell::Cell<()>>,
+
+    _phantom_p: PhantomData<P>,
+    _phantom_k: PhantomData<K>,
 }
 
-impl<K, V, M> Drop for ReadHandle<K, V, M>
+impl<K, P, V> Drop for ReadHandle<K, P, V>
 where
-    K: Eq + Key,
-    V: Copy
+    K: Key<P>,
 {
     fn drop(&mut self) {
         // parity must be restored, so okay to lock since we're not holding up the epoch
@@ -58,11 +59,9 @@ where
     }
 }
 
-impl<K, V, M> fmt::Debug for ReadHandle<K, V, M>
+impl<K, P, V> fmt::Debug for ReadHandle<K, P, V>
 where
-    K: Eq + fmt::Debug + Key,
-    V: Copy,
-    M: fmt::Debug,
+    K: fmt::Debug + Key<P>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReadHandle")
@@ -73,10 +72,9 @@ where
     }
 }
 
-impl<K, V, M> Clone for ReadHandle<K, V, M>
+impl<K, P, V> Clone for ReadHandle<K, P, V>
 where
-    K: Eq + Key,
-    V: Copy
+    K: Key<P>,
 {
     fn clone(&self) -> Self {
         ReadHandle::new(
@@ -86,27 +84,22 @@ where
     }
 }
 
-pub(crate) fn new<K, V, M>(
-    inner: Inner<K, ManuallyDrop<V>, M>,
+pub(crate) fn new<K, P, V>(
+    inner: Inner<ManuallyDrop<V>>,
     epochs: crate::Epochs,
-) -> ReadHandle<K, V, M>
+) -> ReadHandle<K, P, V>
 where
-    K: Eq + Key,
-    V: Copy
+    K: Key<P>,
 {
     let store = Box::into_raw(Box::new(inner));
     ReadHandle::new(sync::Arc::new(AtomicPtr::new(store)), epochs)
 }
 
-impl<K, V, M> ReadHandle<K, V, M>
+impl<K, P, V> ReadHandle<K, P, V>
 where
-    K: Eq + Key,
-    V: Copy
+    K: Key<P>,
 {
-    fn new(
-        inner: sync::Arc<AtomicPtr<Inner<K, ManuallyDrop<V>, M>>>,
-        epochs: crate::Epochs,
-    ) -> Self {
+    fn new(inner: sync::Arc<AtomicPtr<Inner<ManuallyDrop<V>>>>, epochs: crate::Epochs) -> Self {
         // tell writer about our epoch tracker
         let epoch = sync::Arc::new(atomic::AtomicUsize::new(0));
         // okay to lock, since we're not holding up the epoch
@@ -119,26 +112,28 @@ where
             my_epoch: atomic::AtomicUsize::new(0),
             inner,
             _not_sync_no_feature: PhantomData,
+            _phantom_p: Default::default(),
+            _phantom_k: Default::default(),
         }
     }
 
     /// Create a new `Sync` type that can produce additional `ReadHandle`s for use in other
     /// threads.
-    pub fn factory(&self) -> ReadHandleFactory<K, V, M> {
+    pub fn factory(&self) -> ReadHandleFactory<K, P, V> {
         ReadHandleFactory {
             inner: sync::Arc::clone(&self.inner),
             epochs: sync::Arc::clone(&self.epochs),
+            _phantom_p: Default::default(),
+            _phantom_k: Default::default(),
         }
     }
 }
 
-impl<K, V, M> ReadHandle<K, V, M>
+impl<K, P, V> ReadHandle<K, P, V>
 where
-    K: Eq + Key,
-    V: Eq + Copy,
-    M: Clone,
+    K: Key<P>,
 {
-    fn handle(&self) -> Option<ReadGuard<'_, Inner<K, ManuallyDrop<V>, M>>> {
+    fn handle(&self) -> Option<ReadGuard<'_, Inner<ManuallyDrop<V>>>> {
         // once we update our epoch, the writer can no longer do a swap until we set the MSB to
         // indicate that we've finished our read. however, we still need to deal with the case of a
         // race between when the writer reads our epoch and when they decide to make the swap.
@@ -196,7 +191,6 @@ where
         }
     }
 
-
     /// Take out a guarded live reference to the read side of the map.
     ///
     /// This lets you perform more complex read operations on the map.
@@ -206,12 +200,16 @@ where
     /// If no refresh has happened, or the map has been destroyed, this function returns `None`.
     ///
     /// See [`MapReadRef`].
-    pub fn read(&self) -> Option<MapReadRef<'_, K, V, M>> {
+    pub fn read(&self) -> Option<MapReadRef<'_, K, P, V>> {
         let guard = self.handle()?;
         if !guard.is_ready() {
             return None;
         }
-        Some(MapReadRef { guard })
+        Some(MapReadRef {
+            guard,
+            _phantom_k: Default::default(),
+            _phantom_p: Default::default(),
+        })
     }
 
     /// Returns the number of non-empty keys present in the map.
@@ -224,19 +222,13 @@ where
         self.read().map_or(true, |x| x.is_empty())
     }
 
-    /// Get the current meta value.
-    pub fn meta(&self) -> Option<ReadGuard<'_, M>> {
-        Some(self.handle()?.map_ref(|inner| &inner.meta))
-    }
-
     /// Internal version of `get_and`
-    fn get_raw(&self, key: K) -> Option<ReadGuard<'_, ManuallyDrop<V>>>
-    {
+    fn get_raw(&self, key: &K) -> Option<ReadGuard<'_, ManuallyDrop<V>>> {
         let inner = self.handle()?;
         if !inner.is_ready() {
             return None;
         }
-        inner.map_opt(|inner| inner.data.get(key))
+        inner.map_opt(|inner| inner.data.get_unbounded(key))
     }
 
     /// Returns a guarded reference to the values corresponding to the key.
@@ -250,36 +242,9 @@ where
     /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
     /// function returns `None`.
     #[inline]
-    pub fn get<'rh>(&'rh self, key: K) -> Option<ReadGuard<'rh, V>>
-    {
+    pub fn get<'rh>(&'rh self, key: &K) -> Option<ReadGuard<'rh, V>> {
         // call `borrow` here to monomorphize `get_raw` fewer times
         Some(self.get_raw(key)?.map_ref(user_friendly))
-    }
-
-    /// Returns a guarded reference to the values corresponding to the key along with the map
-    /// meta.
-    ///
-    /// While the guard lives, the map cannot be refreshed.
-    ///
-    /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
-    /// form *must* match those for the key type.
-    ///
-    /// Note that not all writes will be included with this read -- only those that have been
-    /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
-    /// function returns `None`.
-    ///
-    /// If no values exist for the given key, `Some(None, _)` is returned.
-    pub fn meta_get<Q: ?Sized>(&self, key: K) -> Option<(Option<ReadGuard<'_,V>>, M)>
-    {
-        let inner = self.handle()?;
-        if !inner.is_ready() {
-            return None;
-        }
-        let meta = inner.meta.clone();
-        let res = inner
-            .map_opt(|inner| inner.data.get(key))
-            .map(|r| r.map_ref(user_friendly));
-        Some((res, meta))
     }
 
     /// Returns true if the writer has destroyed this map.
@@ -293,10 +258,7 @@ where
     ///
     /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
     /// form *must* match those for the key type.
-    pub fn contains_key(&self, key: K) -> bool
-    {
+    pub fn contains_key(&self, key: &K) -> bool {
         self.read().map_or(false, |x| x.contains_key(key))
     }
-
 }
-

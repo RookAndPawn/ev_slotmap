@@ -1,11 +1,13 @@
-use super::{Operation, ShallowCopy};
-use crate::inner::Inner;
+use super::Operation;
+use crate::inner::{Inner, InnerKey};
 use crate::read::ReadHandle;
-use slotmap::Key;
+use one_way_slot_map::SlotMapKey as Key;
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::sync::atomic;
 use std::sync::{Arc, MutexGuard};
 use std::{fmt, mem, thread};
+use evmap::ShallowCopy;
 
 /// A handle that may be used to modify the eventually consistent map.
 ///
@@ -15,50 +17,26 @@ use std::{fmt, mem, thread};
 /// When the `WriteHandle` is dropped, the map is immediately (but safely) taken away from all
 /// readers, causing all future lookups to return `None`.
 ///
-/// # Examples
 /// ```
-/// let x = ('x', 42);
-///
-/// let (r, mut w) = evmap::new();
-///
-/// // the map is uninitialized, so all lookups should return None
-/// assert_eq!(r.get(&x.0).map(|rs| rs.len()), None);
-///
-/// w.refresh();
-///
-/// // after the first refresh, it is empty, but ready
-/// assert_eq!(r.get(&x.0).map(|rs| rs.len()), None);
-///
-/// w.insert(x.0, x);
-///
-/// // it is empty even after an add (we haven't refresh yet)
-/// assert_eq!(r.get(&x.0).map(|rs| rs.len()), None);
-///
-/// w.refresh();
-///
-/// // but after the swap, the record is there!
-/// assert_eq!(r.get(&x.0).map(|rs| rs.len()), Some(1));
-/// assert_eq!(r.get(&x.0).map(|rs| rs.iter().any(|v| v.0 == x.0 && v.1 == x.1)), Some(true));
-/// ```
-pub struct WriteHandle<K, V, M = ()>
+pub struct WriteHandle<K, P, V>
 where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
-    M: 'static + Clone,
+    K: Key<P>,
+    V: ShallowCopy
 {
     epochs: crate::Epochs,
-    w_handle: Option<Box<Inner<K, ManuallyDrop<V>, M>>>,
+    w_handle: Option<Box<Inner<ManuallyDrop<V>>>>,
     last_op: Option<Operation<K, V>>,
-    r_handle: ReadHandle<K, V, M>,
+    r_handle: ReadHandle<K, P, V>,
     last_epochs: Vec<usize>,
-    meta: M,
+
+    phantom_p: PhantomData<P>,
 }
 
-impl<K, V, M> fmt::Debug for WriteHandle<K, V, M>
+impl<K, P, V> fmt::Debug for WriteHandle<K, P, V>
 where
-    K: Eq + Clone + fmt::Debug + Key,
-    V: Eq + ShallowCopy + fmt::Debug + Copy,
-    M: 'static + Clone + fmt::Debug,
+    K: Key<P> + fmt::Debug,
+    V: fmt::Debug + ShallowCopy
+
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WriteHandle")
@@ -66,45 +44,42 @@ where
             .field("w_handle", &self.w_handle)
             .field("last_op", &self.last_op)
             .field("r_handle", &self.r_handle)
-            .field("meta", &self.meta)
             .finish()
     }
 }
 
-pub(crate) fn new<K, V, M>(
-    w_handle: Inner<K, ManuallyDrop<V>, M>,
+pub(crate) fn new<K, P, V>(
+    w_handle: Inner<ManuallyDrop<V>>,
     epochs: crate::Epochs,
-    r_handle: ReadHandle<K, V, M>,
-) -> WriteHandle<K, V, M>
+    r_handle: ReadHandle<K, P, V>,
+) -> WriteHandle<K, P, V>
 where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
-    M: 'static + Clone,
+    K: Key<P>,
+    V: ShallowCopy
 {
-    let m = w_handle.meta.clone();
     WriteHandle {
         epochs,
         w_handle: Some(Box::new(w_handle)),
         last_op: Default::default(),
         r_handle,
         last_epochs: Vec::new(),
-        meta: m
+
+        phantom_p: Default::default(),
     }
 }
 
-impl<K, V, M> Drop for WriteHandle<K, V, M>
+impl<K, P, V> Drop for WriteHandle<K, P, V>
 where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
-    M: 'static + Clone,
+    K: Key<P>,
+    V: ShallowCopy
 {
     fn drop(&mut self) {
         use std::ptr;
 
         // first, ensure both maps are up to date
-        // (otherwise safely dropping deduplicated rows is a pain)
-        self.refresh_with_operation(Operation::Clear);
-        self.refresh_with_operation(Operation::Clear);
+        // (otherwise safely dropping de-duplicated rows is a pain)
+        self.refresh();
+        self.refresh();
 
         // next, grab the read handle and set it to NULL
         let r_handle = self
@@ -133,15 +108,14 @@ where
         // then we transmute r_handle to remove the ManuallyDrop, and then drop it, which will free
         // all the records. this is safe, since we know that no readers are using this pointer
         // anymore (due to the .wait() following swapping the pointer with NULL).
-        drop(unsafe { Box::from_raw(r_handle as *mut Inner<K, V, M>) });
+        drop(unsafe { Box::from_raw(r_handle as *mut Inner<V>) });
     }
 }
 
-impl<K, V, M> WriteHandle<K, V, M>
+impl<K, P, V> WriteHandle<K, P, V>
 where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
-    M: 'static + Clone,
+    K: Key<P>,
+    V: ShallowCopy
 {
     fn wait(&mut self, epochs: &mut MutexGuard<'_, slab::Slab<Arc<atomic::AtomicUsize>>>) {
         let mut iter = 0;
@@ -184,28 +158,30 @@ where
         }
     }
 
-    fn run_operation(target: &mut Box<Inner<K, ManuallyDrop<V>, M>>,
-        op: &Operation<K,V>) -> Option<K>
-    {
-        use Operation::*;
-
+    fn run_operation_first(target: &mut Box<Inner<ManuallyDrop<V>>>, op: &Operation<K, V>) -> Option<InnerKey> {
         let mut result = None;
 
         match op {
-            Add(value) => {
-                result = Some(target.data.insert(ManuallyDrop::new(*value)));
+            Operation::NoOp => (),
+            Operation::Add(value) => {
+                result = Some(
+                    target
+                        .data
+                        .insert((), unsafe { value.shallow_copy() }),
+                );
             }
-            Replace(key, value) => {
-                let old_value = target.data
-                    .get_mut(key.clone())
+            Operation::Replace(key, value) => {
+                let old_value = target
+                    .data
+                    .get_mut_unbounded(key)
                     .expect("Tried to replace empty key");
 
-                *old_value = ManuallyDrop::new(*value);
+                *old_value = unsafe { value.shallow_copy() };
             }
-            Remove(key) => {
-                let _ = target.data.remove(key.clone());
+            Operation::Remove(key) => {
+                let _ = target.data.remove_unbounded(key);
             }
-            Clear => {
+            Operation::Clear => {
                 target.data.clear();
             }
         }
@@ -213,9 +189,34 @@ where
         result
     }
 
+    fn run_operation_second(target: &mut Inner<V>, op: Operation<K, V>) {
+
+        match op {
+            Operation::NoOp => (),
+            Operation::Add(value) => {
+                let _ = target
+                        .data
+                        .insert((), value);
+            }
+            Operation::Replace(key, value) => {
+                let old_value = target
+                    .data
+                    .get_mut_unbounded(&key)
+                    .expect("Tried to replace empty key");
+
+                *old_value = value;
+            }
+            Operation::Remove(key) => {
+                let _ = target.data.remove_unbounded(&key);
+            }
+            Operation::Clear => {
+                target.data.clear();
+            }
+        }
+    }
 
     /// refresh the write/read handle with the given operation
-    fn refresh_with_operation(&mut self, mut op: Operation<K,V>) -> Option<K> {
+    fn refresh_with_operation(&mut self, mut op: Operation<K, V>) -> Option<InnerKey> {
         // we need to wait until all epochs have changed since the swaps *or* until a "finished"
         // flag has been observed to be on for two subsequent iterations (there still may be some
         // readers present since we did the previous refresh)
@@ -229,21 +230,18 @@ where
         self.wait(&mut epochs);
 
         let result = {
-
             // all the readers have left!
             // we can safely bring the w_handle up to date.
             let w_handle = self.w_handle.as_mut().unwrap();
 
-            if let Some(last_op) = &self.last_op {
-                Self::run_operation(w_handle, &last_op);
+            if let Some(last_op) = self.last_op.take() {
+                Self::run_operation_second(unsafe { w_handle.do_drop() }, last_op);
             }
 
-            let result = Self::run_operation(w_handle, &mut op);
+            let result = Self::run_operation_first(w_handle, &mut op);
 
             self.last_op = Some(op);
 
-            // ensure meta-information is up to date
-            w_handle.meta = self.meta.clone();
             w_handle.mark_ready();
 
             // w_handle (the old r_handle) is now fully up to date!
@@ -282,19 +280,15 @@ where
         result
     }
 
-    /// Set the metadata.
-    ///
-    /// Will only be visible to readers after the next call to `refresh()`.
-    pub fn set_meta(&mut self, mut meta: M) -> M {
-        mem::swap(&mut self.meta, &mut meta);
-        meta
+    pub fn refresh(&mut self) {
+        let _ = self.refresh_with_operation(Operation::NoOp);
     }
 
-    /// Add the given value to the value-bag of the given key.
-    ///
-    /// The updated value-bag will only be visible to readers after the next call to `refresh()`.
-    pub fn insert(&mut self, v: V) -> K {
-        self.refresh_with_operation(Operation::Add(v)).expect("No key returned on insert")
+    /// Insert the given value into the slot map
+    pub fn insert(&mut self, p: P, v: V) -> K {
+        self.refresh_with_operation(Operation::Add(v))
+            .expect("No key returned on insert")
+            .to_outer_key(p)
     }
 
     /// Replace the value-bag of the given key with the given value.
@@ -327,18 +321,16 @@ where
     pub fn remove(&mut self, k: K) {
         let _ = self.refresh_with_operation(Operation::Remove(k));
     }
-
 }
 
 // allow using write handle for reads
 use std::ops::Deref;
-impl<K, V, M> Deref for WriteHandle<K, V, M>
+impl<K, P, V> Deref for WriteHandle<K, P, V>
 where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
-    M: 'static + Clone,
+    K: Key<P>,
+    V: ShallowCopy
 {
-    type Target = ReadHandle<K, V, M>;
+    type Target = ReadHandle<K, P, V>;
     fn deref(&self) -> &Self::Target {
         &self.r_handle
     }

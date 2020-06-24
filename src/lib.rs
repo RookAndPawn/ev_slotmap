@@ -27,208 +27,6 @@
 //! meta will also be made visible to readers. This could be useful, for example, to indicate what
 //! time the refresh happened.
 //!
-//! # Examples
-//!
-//! Single-reader, single-writer
-//!
-//! ```
-//! // new will use the default HashMap hasher, and a meta of ()
-//! // note that we get separate read and write handles
-//! // the read handle can be cloned to have more readers
-//! let (book_reviews_r, mut book_reviews_w) = evmap::new();
-//!
-//! // review some books.
-//! book_reviews_w.insert("Adventures of Huckleberry Finn",    "My favorite book.");
-//! book_reviews_w.insert("Grimms' Fairy Tales",               "Masterpiece.");
-//! book_reviews_w.insert("Pride and Prejudice",               "Very enjoyable.");
-//! book_reviews_w.insert("The Adventures of Sherlock Holmes", "Eye lyked it alot.");
-//!
-//! // at this point, reads from book_reviews_r will not see any of the reviews!
-//! assert_eq!(book_reviews_r.len(), 0);
-//! // we need to refresh first to make the writes visible
-//! book_reviews_w.refresh();
-//! assert_eq!(book_reviews_r.len(), 4);
-//! // reads will now return Some() because the map has been initialized
-//! assert_eq!(book_reviews_r.get("Grimms' Fairy Tales").map(|rs| rs.len()), Some(1));
-//!
-//! // remember, this is a multi-value map, so we can have many reviews
-//! book_reviews_w.insert("Grimms' Fairy Tales",               "Eh, the title seemed weird.");
-//! book_reviews_w.insert("Pride and Prejudice",               "Too many words.");
-//!
-//! // but again, new writes are not yet visible
-//! assert_eq!(book_reviews_r.get("Grimms' Fairy Tales").map(|rs| rs.len()), Some(1));
-//!
-//! // we need to refresh first
-//! book_reviews_w.refresh();
-//! assert_eq!(book_reviews_r.get("Grimms' Fairy Tales").map(|rs| rs.len()), Some(2));
-//!
-//! // oops, this review has a lot of spelling mistakes, let's delete it.
-//! // empty deletes *all* reviews (though in this case, just one)
-//! book_reviews_w.empty("The Adventures of Sherlock Holmes");
-//! // but again, it's not visible to readers until we refresh
-//! assert_eq!(book_reviews_r.get("The Adventures of Sherlock Holmes").map(|rs| rs.len()), Some(1));
-//! book_reviews_w.refresh();
-//! assert_eq!(book_reviews_r.get("The Adventures of Sherlock Holmes").map(|rs| rs.len()), None);
-//!
-//! // look up the values associated with some keys.
-//! let to_find = ["Pride and Prejudice", "Alice's Adventure in Wonderland"];
-//! for book in &to_find {
-//!     if let Some(reviews) = book_reviews_r.get(book) {
-//!         for review in &*reviews {
-//!             println!("{}: {}", book, review);
-//!         }
-//!     } else {
-//!         println!("{} is unreviewed.", book);
-//!     }
-//! }
-//!
-//! // iterate over everything.
-//! for (book, reviews) in &book_reviews_r.read().unwrap() {
-//!     for review in reviews {
-//!         println!("{}: \"{}\"", book, review);
-//!     }
-//! }
-//! ```
-//!
-//! Reads from multiple threads are possible by cloning the `ReadHandle`.
-//!
-//! ```
-//! use std::thread;
-//! let (book_reviews_r, mut book_reviews_w) = evmap::new();
-//!
-//! // start some readers
-//! let readers: Vec<_> = (0..4).map(|_| {
-//!     let r = book_reviews_r.clone();
-//!     thread::spawn(move || {
-//!         loop {
-//!             let l = r.len();
-//!             if l == 0 {
-//!                 thread::yield_now();
-//!             } else {
-//!                 // the reader will either see all the reviews,
-//!                 // or none of them, since refresh() is atomic.
-//!                 assert_eq!(l, 4);
-//!                 break;
-//!             }
-//!         }
-//!     })
-//! }).collect();
-//!
-//! // do some writes
-//! book_reviews_w.insert("Adventures of Huckleberry Finn",    "My favorite book.");
-//! book_reviews_w.insert("Grimms' Fairy Tales",               "Masterpiece.");
-//! book_reviews_w.insert("Pride and Prejudice",               "Very enjoyable.");
-//! book_reviews_w.insert("The Adventures of Sherlock Holmes", "Eye lyked it alot.");
-//! // expose the writes
-//! book_reviews_w.refresh();
-//!
-//! // you can read through the write handle
-//! assert_eq!(book_reviews_w.len(), 4);
-//!
-//! // the original read handle still works too
-//! assert_eq!(book_reviews_r.len(), 4);
-//!
-//! // all the threads should eventually see .len() == 4
-//! for r in readers.into_iter() {
-//!     assert!(r.join().is_ok());
-//! }
-//! ```
-//!
-//! If multiple writers are needed, the `WriteHandle` must be protected by a `Mutex`.
-//!
-//! ```
-//! use std::thread;
-//! use std::sync::{Arc, Mutex};
-//! let (book_reviews_r, mut book_reviews_w) = evmap::new();
-//!
-//! // start some writers.
-//! // since evmap does not support concurrent writes, we need
-//! // to protect the write handle by a mutex.
-//! let w = Arc::new(Mutex::new(book_reviews_w));
-//! let writers: Vec<_> = (0..4).map(|i| {
-//!     let w = w.clone();
-//!     thread::spawn(move || {
-//!         let mut w = w.lock().unwrap();
-//!         w.insert(i, true);
-//!         w.refresh();
-//!     })
-//! }).collect();
-//!
-//! // eventually we should see all the writes
-//! while book_reviews_r.len() < 4 { thread::yield_now(); };
-//!
-//! // all the threads should eventually finish writing
-//! for w in writers.into_iter() {
-//!     assert!(w.join().is_ok());
-//! }
-//! ```
-//!
-//! `ReadHandle` is not `Sync` as it is not safe to share a single instance
-//! amongst threads. A fresh `ReadHandle` needs to be created for each thread
-//! either by cloning a `ReadHandle` or from a `ReadHandleFactory`.
-//!
-//! The reason for this is that each `ReadHandle` assumes that only one
-//! thread operates on it at a time. For details, see the implementation
-//! comments on `ReadHandle`.
-//!
-//!```compile_fail
-//! use evmap::ReadHandle;
-//!
-//! fn is_sync<T: Sync>() {
-//!   // dummy function just used for its parameterized type bound
-//! }
-//!
-//! // the line below will not compile as ReadHandle does not implement Sync
-//!
-//! is_sync::<ReadHandle<u64, u64>>()
-//!```
-//!
-//! `ReadHandle` **is** `Send` though, since in order to send a `ReadHandle`,
-//! there must be no references to it, so no thread is operating on it.
-//!
-//!```
-//! use evmap::ReadHandle;
-//!
-//! fn is_send<T: Send>() {
-//!   // dummy function just used for its parameterized type bound
-//! }
-//!
-//! is_send::<ReadHandle<u64, u64>>()
-//!```
-//!
-//! For further explanation of `Sync` and `Send` [here](https://doc.rust-lang.org/nomicon/send-and-sync.html)
-//!
-//! # Implementation
-//!
-//! Under the hood, the map is implemented using two regular `HashMap`s, an operational log,
-//! epoch counting, and some pointer magic. There is a single pointer through which all readers
-//! go. It points to a `HashMap`, which the readers access in order to read data. Every time a read
-//! has accessed the pointer, they increment a local epoch counter, and they update it again when
-//! they have finished the read (see #3 for more information). When a write occurs, the writer
-//! updates the other `HashMap` (for which there are no readers), and also stores a copy of the
-//! change in a log (hence the need for `Clone` on the keys and values). When
-//! `WriteHandle::refresh` is called, the writer, atomically swaps the reader pointer to point to
-//! the other map. It then waits for the epochs of all current readers to change, and then replays
-//! the operational log to bring the stale map up to date.
-//!
-//! Since the implementation uses regular `HashMap`s under the hood, table resizing is fully
-//! supported. It does, however, also mean that the memory usage of this implementation is
-//! approximately twice of that of a regular `HashMap`, and more if writes rarely refresh after
-//! writing.
-//!
-//! # Value storage
-//!
-//! The values for each key in the map are stored in [`Values`]. Conceptually, each `Values` is a
-//! _bag_ or _multiset_; it can store multiple copies of the same value. `evmap` applies some
-//! cleverness in an attempt to reduce unnecessary allocations and keep the cost of operations on
-//! even large value-bags small. For small bags, `Values` uses the `smallvec` crate. This avoids
-//! allocation entirely for single-element bags, and uses a `Vec` if the bag is relatively small.
-//! For large bags, `Values` uses the `hashbag` crate, which enables `evmap` to efficiently look up
-//! and remove specific elements in the value bag. For bags larger than one element, but smaller
-//! than the threshold for moving to `hashbag`, we use `smallvec` to avoid unnecessary hashing.
-//! Operations such as `Fit` and `Replace` will automatically switch back to the inline storage if
-//! possible. This is ideal for maps that mostly use one element per key, as it can improvate
-//! memory locality with less indirection.
 #![warn(
     missing_docs,
     rust_2018_idioms,
@@ -237,13 +35,14 @@
 )]
 #![allow(clippy::type_complexity)]
 
+use one_way_slot_map::SlotMapKey as Key;
 use std::fmt;
 use std::sync::{atomic, Arc, Mutex};
-use slotmap::Key;
 mod inner;
 use crate::inner::Inner;
-
-pub(crate) type Epochs = Arc<Mutex<slab::Slab<Arc<atomic::AtomicUsize>>>>;
+use slab::Slab;
+use evmap::ShallowCopy;
+pub(crate) type Epochs = Arc<Mutex<Slab<Arc<atomic::AtomicUsize>>>>;
 
 /// Unary predicate used to retain elements.
 ///
@@ -281,6 +80,8 @@ impl<V> fmt::Debug for Predicate<V> {
 #[non_exhaustive]
 #[derive(PartialEq, Eq, Debug)]
 pub enum Operation<K, V> {
+    /// Just do a refresh without altering the data
+    NoOp,
     /// Replace the value for this key with this value.
     Replace(K, V),
     /// Add this value to the map.
@@ -288,7 +89,7 @@ pub enum Operation<K, V> {
     /// Remove the value with this key from the map.
     Remove(K),
     /// Clear the map.
-    Clear
+    Clear,
 }
 
 mod write;
@@ -297,109 +98,21 @@ pub use crate::write::WriteHandle;
 mod read;
 pub use crate::read::{MapReadRef, ReadGuard, ReadHandle, ReadHandleFactory};
 
-pub mod shallow_copy;
-pub use crate::shallow_copy::ShallowCopy;
-
-/// Options for how to initialize the map.
-///
-/// In particular, the options dictate the hashing function, meta type, and initial capacity of the
-/// map.
-pub struct Options<M>
-{
-    meta: M,
-    capacity: Option<usize>,
-}
-
-impl<M> fmt::Debug for Options<M>
-where
-    M: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Options")
-            .field("meta", &self.meta)
-            .field("capacity", &self.capacity)
-            .finish()
-    }
-}
-
-impl Default for Options<()> {
-    fn default() -> Self {
-        Options {
-            meta: (),
-            capacity: None,
-        }
-    }
-}
-
-impl<M> Options<M>
-{
-    /// Set the initial meta value for the map.
-    pub fn with_meta<M2>(self, meta: M2) -> Options<M2> {
-        Options {
-            meta,
-            capacity: self.capacity,
-        }
-    }
-
-
-    /// Set the initial capacity for the map.
-    pub fn with_capacity(self, capacity: usize) -> Options<M> {
-        Options {
-            meta: self.meta,
-            capacity: Some(capacity),
-        }
-    }
-
-    /// Create the map, and construct the read and write handles used to access it.
-    #[allow(clippy::type_complexity)]
-    pub fn construct<K, V>(self) -> (ReadHandle<K, V, M>, WriteHandle<K, V, M>)
-    where
-        K: Eq + Clone + Key,
-        V: Eq + ShallowCopy + Copy,
-        M: 'static + Clone,
-    {
-        let epochs = Default::default();
-        let inner = Inner::with_capacity(
-            self.meta, self.capacity.unwrap_or_default());
-
-        let mut w_handle = inner.clone();
-        w_handle.mark_ready();
-        let r = read::new(inner, Arc::clone(&epochs));
-        let w = write::new(w_handle, epochs, r.clone());
-        (r, w)
-    }
-}
-
 /// Create an empty eventually consistent map.
 ///
 /// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
 #[allow(clippy::type_complexity)]
-pub fn new<K, V>() -> (
-    ReadHandle<K, V, ()>,
-    WriteHandle<K, V, ()>,
-)
+pub fn new<K, P, V>() -> (ReadHandle<K, P, V>, WriteHandle<K, P, V>)
 where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
+    K: Key<P>,
+    V: ShallowCopy,
 {
-    Options::default().construct()
-}
+    let epochs = Default::default();
+    let inner = Inner::new();
 
-/// Create an empty eventually consistent map with meta information.
-///
-/// Use the [`Options`](./struct.Options.html) builder for more control over initialization.
-#[allow(clippy::type_complexity)]
-pub fn with_meta<K, V, M>(
-    meta: M,
-) -> (
-    ReadHandle<K, V, M>,
-    WriteHandle<K, V, M>,
-)
-where
-    K: Eq + Clone + Key,
-    V: Eq + ShallowCopy + Copy,
-    M: 'static + Clone,
-{
-    Options::default().with_meta(meta).construct()
+    let mut w_handle = inner.clone();
+    w_handle.mark_ready();
+    let r = read::new(inner, Arc::clone(&epochs));
+    let w = write::new(w_handle, epochs, r.clone());
+    (r, w)
 }
-

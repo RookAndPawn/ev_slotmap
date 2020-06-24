@@ -1,8 +1,7 @@
-
 use std::mem;
+use std::mem::ManuallyDrop;
 use std::sync;
 use std::sync::atomic;
-use std::mem::ManuallyDrop;
 
 /// A guard wrapping a live reference into an evmap.
 ///

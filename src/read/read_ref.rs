@@ -1,7 +1,7 @@
 use super::ReadGuard;
-use crate::{inner::Inner};
-use slotmap::{SlotMap, Key};
-use std::borrow::Borrow;
+use crate::inner::Inner;
+use one_way_slot_map::SlotMapKey as Key;
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 
 use super::user_friendly;
@@ -14,20 +14,19 @@ use super::user_friendly;
 /// Since the map remains immutable while this lives, the methods on this type all give you
 /// unguarded references to types contained in the map.
 #[derive(Debug)]
-pub struct MapReadRef<'rh, K, V, M = ()>
+pub struct MapReadRef<'rh, K, P, V>
 where
-    K: Eq + Key,
-    V: Eq + Copy,
+    K: Key<P>,
 {
-    pub(super) guard: ReadGuard<'rh, Inner<K, ManuallyDrop<V>, M>>,
+    pub(super) guard: ReadGuard<'rh, Inner<ManuallyDrop<V>>>,
+    pub(super) _phantom_k: PhantomData<K>,
+    pub(super) _phantom_p: PhantomData<P>,
 }
 
-impl<'rh, K, V, M> MapReadRef<'rh, K, V, M>
+impl<'rh, K, P, V> MapReadRef<'rh, K, P, V>
 where
-    K: Eq + Key,
-    V: Eq + Copy,
+    K: Key<P>,
 {
-
     /// Returns the number of non-empty keys present in the map.
     pub fn len(&self) -> usize {
         self.guard.data.len()
@@ -38,11 +37,6 @@ where
         self.guard.data.is_empty()
     }
 
-    /// Get the current meta value.
-    pub fn meta(&self) -> &M {
-        &self.guard.meta
-    }
-
     /// Returns a reference to the values corresponding to the key.
     ///
     /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
@@ -51,17 +45,15 @@ where
     /// Note that not all writes will be included with this read -- only those that have been
     /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
     /// function returns `None`.
-    pub fn get<'a>(&'a self, key: K) -> Option<&'a V>
-    {
-        self.guard.data.get(key).map(user_friendly)
+    pub fn get<'a>(&'a self, key: &'_ K) -> Option<&'a V> {
+        self.guard.data.get_unbounded(key).map(user_friendly)
     }
 
     /// Returns true if the map contains any values for the specified key.
     ///
     /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
     /// form *must* match those for the key type.
-    pub fn contains_key(&self, key: K) -> bool
-    {
-        self.guard.data.contains_key(key)
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.guard.data.contains_key_unbounded(key)
     }
 }
