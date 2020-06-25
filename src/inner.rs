@@ -6,8 +6,9 @@ use std::mem::ManuallyDrop;
 define_key_type!(pub(crate) InnerKey<()> : Copy + Clone);
 
 impl InnerKey {
-    pub fn to_outer_key<K, P>(self, embedded: P) -> K
-        where K : SlotMapKey<P>
+    pub(crate) fn to_outer_key<K, P>(self, embedded: P) -> K
+    where
+        K: SlotMapKey<P>,
     {
         K::from((embedded, self.slot_key))
     }
@@ -36,8 +37,7 @@ where
     }
 }
 
-impl<V> Clone for Inner<V>
-{
+impl<V> Clone for Inner<V> {
     fn clone(&self) -> Self {
         assert!(self.data.is_empty());
         Inner {
@@ -48,7 +48,7 @@ impl<V> Clone for Inner<V>
 }
 
 impl<V> Inner<ManuallyDrop<V>> {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Inner {
             data: SlotMap::new(),
             ready: false,
@@ -57,11 +57,11 @@ impl<V> Inner<ManuallyDrop<V>> {
 }
 
 impl<V> Inner<V> {
-    pub fn mark_ready(&mut self) {
+    pub(crate) fn mark_ready(&mut self) {
         self.ready = true;
     }
 
-    pub fn is_ready(&self) -> bool {
+    pub(crate) fn is_ready(&self) -> bool {
         self.ready
     }
 }

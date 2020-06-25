@@ -21,11 +21,7 @@ pub(crate) fn user_friendly<'a, T>(to_fix: &'a ManuallyDrop<T>) -> &'a T {
     unsafe { &*(to_fix as *const ManuallyDrop<T> as *const T) }
 }
 
-/// A handle that may be used to read from the eventually consistent map.
-///
-/// Note that any changes made to the map will not be made visible until the writer calls
-/// `refresh()`. In other words, all operations performed on a `ReadHandle` will *only* see writes
-/// to the map that preceded the last call to `refresh()`.
+/// A handle that may be used to read from the concurrent slot map.
 pub struct ReadHandle<K, P, V>
 where
     K: Key<P>,
@@ -99,7 +95,10 @@ impl<K, P, V> ReadHandle<K, P, V>
 where
     K: Key<P>,
 {
-    fn new(inner: sync::Arc<AtomicPtr<Inner<ManuallyDrop<V>>>>, epochs: crate::Epochs) -> Self {
+    fn new(
+        inner: sync::Arc<AtomicPtr<Inner<ManuallyDrop<V>>>>,
+        epochs: crate::Epochs,
+    ) -> Self {
         // tell writer about our epoch tracker
         let epoch = sync::Arc::new(atomic::AtomicUsize::new(0));
         // okay to lock, since we're not holding up the epoch
@@ -217,7 +216,7 @@ where
         self.read().map_or(0, |x| x.len())
     }
 
-    /// Returns true if the map contains no elements.
+    /// Returns true if the map contains no non-empty keys.
     pub fn is_empty(&self) -> bool {
         self.read().map_or(true, |x| x.is_empty())
     }
@@ -231,33 +230,25 @@ where
         inner.map_opt(|inner| inner.data.get_unbounded(key))
     }
 
-    /// Returns a guarded reference to the values corresponding to the key.
+    /// Returns a guarded reference to the value corresponding to the key.
     ///
     /// While the guard lives, the map cannot be refreshed.
     ///
-    /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
-    /// form must match those for the key type.
-    ///
-    /// Note that not all writes will be included with this read -- only those that have been
-    /// refreshed by the writer. If no refresh has happened, or the map has been destroyed, this
-    /// function returns `None`.
+    /// If no writes have happened or if the write handle has been dropped, then
+    /// None is returned here
     #[inline]
     pub fn get<'rh>(&'rh self, key: &K) -> Option<ReadGuard<'rh, V>> {
         // call `borrow` here to monomorphize `get_raw` fewer times
         Some(self.get_raw(key)?.map_ref(user_friendly))
     }
 
-    /// Returns true if the writer has destroyed this map.
-    ///
-    /// See [`WriteHandle::destroy`].
+    /// Returns true if the writer has destroyed this map (This happens when the
+    /// writer is dropped).
     pub fn is_destroyed(&self) -> bool {
         self.handle().is_none()
     }
 
-    /// Returns true if the map contains any values for the specified key.
-    ///
-    /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
-    /// form *must* match those for the key type.
+    /// Returns true if the map contains a value for the specified key.
     pub fn contains_key(&self, key: &K) -> bool {
         self.read().map_or(false, |x| x.contains_key(key))
     }

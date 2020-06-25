@@ -9,7 +9,8 @@ use super::user_friendly;
 /// A live reference into the read half of an evmap.
 ///
 /// As long as this lives, the map being read cannot change, and if a writer attempts to
-/// call [`WriteHandle::refresh`], that call will block until this is dropped.
+/// call any write method, that call will block until this is dropped, so make
+/// sure these are dropped as soon as possible
 ///
 /// Since the map remains immutable while this lives, the methods on this type all give you
 /// unguarded references to types contained in the map.

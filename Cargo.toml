@@ -17,3 +17,5 @@ one_way_slot_map = "0.2.0"
 slab = "0.4"
 evmap = "10.0.2"
 
+[dev-dependencies]
+threadpool = "1.8.1"

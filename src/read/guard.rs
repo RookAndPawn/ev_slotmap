@@ -1,12 +1,12 @@
 use std::mem;
-use std::mem::ManuallyDrop;
 use std::sync;
 use std::sync::atomic;
 
-/// A guard wrapping a live reference into an evmap.
+/// A guard wrapping a live reference into an ev slotmap.
 ///
 /// As long as this guard lives, the map being read cannot change, and if a writer attempts to
-/// call [`WriteHandle::refresh`], that call will block until this guard is dropped.
+/// call any write method, that call will spin until this guard is dropped, so make sure
+/// these guards are dropped as soon as possible
 #[derive(Debug)]
 pub struct ReadGuard<'rh, T: ?Sized> {
     // NOTE: _technically_ this is more like &'self.
@@ -41,11 +41,6 @@ impl<'rh, T: ?Sized> ReadGuard<'rh, T> {
         });
         mem::forget(self);
         rg
-    }
-}
-impl<'rh, T> ReadGuard<'rh, ManuallyDrop<T>> {
-    pub(crate) fn user_friendly(&self) -> &ReadGuard<'rh, T> {
-        unsafe { &*(self as *const Self as *const ReadGuard<'rh, T>) }
     }
 }
 
