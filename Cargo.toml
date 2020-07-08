@@ -1,13 +1,13 @@
 [package]
 name = "ev_slotmap"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Kevin Guthrie <kevin.guthrie@gmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 
 readme = "README.md"
 description = "A lock-free, eventually consistent, concurrent slot map."
-repository = "https://github.com/rookandpawn/ev_slot_map.git"
+repository = "https://github.com/rookandpawn/ev_slotmap.git"
 
 keywords = ["slotmap","lock-free"]
 categories = ["concurrency", "data-structures"]
