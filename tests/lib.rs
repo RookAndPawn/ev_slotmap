@@ -167,3 +167,30 @@ fn test_performance_against_std_rwlock() {
         assert_eq!(writes * threads, *map.read().unwrap().get(k).unwrap());
     }
 }
+
+#[test]
+fn test_iter() {
+    let (r, w) = ev_slotmap::new();
+
+    let writer: Arc<Mutex<WriteHandle<TestKey, (), usize>>> =
+        Arc::new(Mutex::new(w));
+
+    let insertions = 10000;
+
+    let mut keys = Vec::new();
+
+    for i in 0..insertions {
+        keys.push(Some(writer.lock().unwrap().insert((), i)));
+    }
+
+    let read_ref = r.read().expect("Dude, where's my read ref");
+
+    read_ref.iter().for_each(|v| {
+        let old = keys.get_mut(*v).expect("Dude, where's my entry").take();
+        assert!(old.is_some());
+    });
+
+    for key in keys {
+        assert!(key.is_none());
+    }
+}

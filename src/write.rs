@@ -218,10 +218,7 @@ where
     }
 
     /// refresh the write/read handle with the given operation
-    fn refresh_with_operation(
-        &mut self,
-        op: Operation<V>,
-    ) -> Option<InnerKey> {
+    fn refresh_with_operation(&mut self, op: Operation<V>) -> Option<InnerKey> {
         // we need to wait until all epochs have changed since the swaps *or* until a "finished"
         // flag has been observed to be on for two subsequent iterations (there still may be some
         // readers present since we did the previous refresh)

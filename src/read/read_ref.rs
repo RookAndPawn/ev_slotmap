@@ -38,6 +38,11 @@ where
         self.guard.data.is_empty()
     }
 
+    /// Get an iterator over all the items in the slot map
+    pub fn iter(&self) -> impl Iterator<Item = &V> {
+        self.guard.data.iter().map(user_friendly)
+    }
+
     /// Returns a reference to the values corresponding to the key.
     ///
     /// The key may be any borrowed form of the map's key type, but `Hash` and `Eq` on the borrowed
