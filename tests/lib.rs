@@ -1,5 +1,7 @@
 use ev_slotmap::WriteHandle;
 use one_way_slot_map::{define_key_type, SlotMap};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 use threadpool::ThreadPool;
 
@@ -76,23 +78,24 @@ fn read_after_drop() {
 
 #[test]
 fn test_consistency() {
-    let (r, w) = ev_slotmap::new();
+    let mut data = SlotMap::new();
+    let mut keys = Vec::new();
+
+    let insertions = 100;
+    for _ in 0..insertions {
+        keys.push(data.insert((), 0));
+    }
+
+    let (r, w) = ev_slotmap::new_with_data(data);
 
     let writer: Arc<Mutex<WriteHandle<TestKey, (), usize>>> =
         Arc::new(Mutex::new(w));
 
-    let threads = 10;
-    let insertions = 100;
+    let threads = 1;
     let writes = 100;
     let reads = 1_000;
 
     let pool = ThreadPool::new(threads);
-
-    let mut keys = Vec::new();
-
-    for _ in 0..insertions {
-        keys.push(writer.lock().unwrap().insert((), 0));
-    }
 
     for _ in 0..threads {
         let writer_clone = writer.clone();
@@ -193,4 +196,50 @@ fn test_iter() {
     for key in keys {
         assert!(key.is_none());
     }
+}
+
+struct DropCheckingType<'a, F>
+where
+    F: Fn(usize),
+{
+    index: usize,
+    inner: &'a F,
+}
+
+impl<'a, F> Drop for DropCheckingType<'a, F>
+where
+    F: Fn(usize),
+{
+    fn drop(&mut self) {
+        (self.inner)(self.index);
+    }
+}
+
+#[test]
+fn test_for_dropping_sanity() {
+    let drop_check = Rc::new(RefCell::new(Vec::new()));
+    let value_count = 1000;
+
+    let drop_checker = |index| {
+        let mut v = drop_check.borrow_mut();
+        let c = v.get_mut(index).unwrap();
+        *c += 1;
+    };
+
+    {
+        let (r, mut w) = ev_slotmap::new();
+        let mut keys = Vec::<TestKey>::new();
+        for i in 0..value_count {
+            drop_check.borrow_mut().push(0);
+            keys.push(w.insert(
+                (),
+                Box::new(DropCheckingType {
+                    index: i,
+                    inner: &drop_checker,
+                }),
+            ));
+        }
+    }
+
+    drop_check.borrow().iter().for_each(|v| assert_eq!(*v, 1));
 }

@@ -33,7 +33,7 @@
 )]
 #![allow(clippy::type_complexity)]
 
-use one_way_slot_map::{SlotMapKey as Key, SlotMapKeyData};
+use one_way_slot_map::{SlotMap, SlotMapKey as Key, SlotMapKeyData};
 use std::sync::{atomic, Arc, Mutex};
 mod inner;
 use crate::inner::Inner;
@@ -64,7 +64,6 @@ mod read;
 pub use crate::read::{MapReadRef, ReadGuard, ReadHandle, ReadHandleFactory};
 
 /// Create an empty ev slotmap.
-#[allow(clippy::type_complexity)]
 pub fn new<K, P, V>() -> (ReadHandle<K, P, V>, WriteHandle<K, P, V>)
 where
     K: Key<P>,
@@ -73,9 +72,25 @@ where
     let epochs = Default::default();
     let inner = Inner::new();
 
-    let mut w_handle = inner.clone();
+    let mut w_handle = Inner::new();
     w_handle.mark_ready();
     let r = read::new(inner, Arc::clone(&epochs));
     let w = write::new(w_handle, epochs, r.clone());
+    (r, w)
+}
+
+/// Create a new evmap with the given data
+pub fn new_with_data<K, P, V>(
+    data: SlotMap<K, P, V>,
+) -> (ReadHandle<K, P, V>, WriteHandle<K, P, V>)
+where
+    K: Key<P>,
+    V: ShallowCopy,
+{
+    let epochs = Default::default();
+    let (inner_r, inner_w) = Inner::new_with_data(data);
+
+    let r = read::new(inner_r, Arc::clone(&epochs));
+    let w = write::new(inner_w, epochs, r.clone());
     (r, w)
 }

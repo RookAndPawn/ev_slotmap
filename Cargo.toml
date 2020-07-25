@@ -13,7 +13,7 @@ keywords = ["slotmap","lock-free"]
 categories = ["concurrency", "data-structures"]
 
 [dependencies]
-one_way_slot_map = "0.2.0"
+one_way_slot_map = "0.2.1"
 slab = "0.4"
 evmap = "10.0.2"
 
