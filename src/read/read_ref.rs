@@ -1,6 +1,6 @@
 use super::ReadGuard;
 use crate::inner::Inner;
-use one_way_slot_map::SlotMapKey as Key;
+use one_way_slot_map::{SlotMapKey as Key, SlotMapKeyData};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 
@@ -39,8 +39,30 @@ where
     }
 
     /// Get an iterator over all the items in the slot map
-    pub fn iter(&self) -> impl Iterator<Item = &V> {
-        self.guard.data.iter().map(user_friendly)
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.guard.data.values().map(user_friendly)
+    }
+
+    /// Get an iterator over all the keys and values in the slot map as long
+    /// as you have a way to create the pointer value from the stored value
+    pub fn iter<F>(
+        &self,
+        mut pointer_finder: F,
+    ) -> impl Iterator<Item = (K, &V)>
+    where
+        F: FnMut(&V) -> P,
+    {
+        self.iter_raw().map(move |(key_data, v)| {
+            (K::from(((&mut pointer_finder)(v), key_data)), v)
+        })
+    }
+
+    /// Get an iterator over all the raw key data and values in the map
+    pub fn iter_raw(&self) -> impl Iterator<Item = (SlotMapKeyData, &V)> {
+        self.guard
+            .data
+            .iter_raw()
+            .map(|(key_data, v)| (key_data, user_friendly(v)))
     }
 
     /// Returns a reference to the values corresponding to the key.
