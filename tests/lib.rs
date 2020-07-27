@@ -188,7 +188,7 @@ fn test_iter() {
 
     let read_ref = r.read().expect("Dude, where's my read ref");
 
-    read_ref.iter().for_each(|v| {
+    read_ref.values().for_each(|v| {
         let old = keys.get_mut(*v).expect("Dude, where's my entry").take();
         assert!(old.is_some());
     });
@@ -227,7 +227,7 @@ fn test_for_dropping_sanity() {
     };
 
     {
-        let (r, mut w) = ev_slotmap::new();
+        let (_, mut w) = ev_slotmap::new();
         let mut keys = Vec::<TestKey>::new();
         for i in 0..value_count {
             drop_check.borrow_mut().push(0);
